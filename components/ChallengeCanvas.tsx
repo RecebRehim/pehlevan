@@ -22,6 +22,7 @@ type ChallengeCanvasProps = {
   onProgress: (progress: number, detail?: number) => void;
   onComplete: () => void;
   onFeedback: (kind: FeedbackKind, intensity: number) => void;
+  onObjectTouch: () => void;
 };
 
 type Damage = {
@@ -726,6 +727,7 @@ function WatermelonChallenge({
   onProgress,
   onComplete,
   onFeedback,
+  onObjectTouch,
 }: Omit<ChallengeCanvasProps, "challenge">) {
   const shell = useRef<THREE.Mesh>(null);
   const fruitRig = useRef<THREE.Group>(null);
@@ -810,6 +812,7 @@ function WatermelonChallenge({
   const onPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
     (event.target as Element).setPointerCapture?.(event.pointerId);
+    onObjectTouch();
     if (burstRef.current) {
       const id = performance.now();
       setBursts((current) => [...current.slice(-3), { id, origin: [0, -0.03, 0.82], normal: [0, 0.2, 1], power: 0.72 }]);
@@ -818,7 +821,7 @@ function WatermelonChallenge({
     }
     holding.current = true;
     addPressure(0.19);
-  }, [addPressure, onFeedback]);
+  }, [addPressure, onFeedback, onObjectTouch]);
 
   const onPointerUp = useCallback((event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
@@ -914,7 +917,7 @@ function makeBarSegments(bend: number, zOffset = 0) {
   });
 }
 
-function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback }: Omit<ChallengeCanvasProps, "challenge">) {
+function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onObjectTouch }: Omit<ChallengeCanvasProps, "challenge">) {
   const frontBar = useRef<THREE.InstancedMesh>(null);
   const backBar = useRef<THREE.InstancedMesh>(null);
   const rig = useRef<THREE.Group>(null);
@@ -956,6 +959,7 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback }: O
   const onPointerDown = (event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
     (event.target as Element).setPointerCapture?.(event.pointerId);
+    onObjectTouch();
     dragStart.current = { y: event.nativeEvent.clientY, bend };
     setDragging(true);
     onFeedback("metal", 0.32);
@@ -1269,7 +1273,7 @@ function CarModel({ lift, onPointerDown, onPointerMove, onPointerUp, dragging }:
   );
 }
 
-function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback }: Omit<ChallengeCanvasProps, "challenge">) {
+function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onObjectTouch }: Omit<ChallengeCanvasProps, "challenge">) {
   const [lift, setLift] = useState(0);
   const [dragging, setDragging] = useState(false);
   const dragStart = useRef({ y: 0, lift: 0 });
@@ -1285,6 +1289,7 @@ function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback }: Omi
   const onPointerDown = (event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
     (event.target as Element).setPointerCapture?.(event.pointerId);
+    onObjectTouch();
     dragStart.current = { y: event.nativeEvent.clientY, lift };
     setDragging(true);
     onFeedback("car", 0.28);
@@ -1407,6 +1412,7 @@ export default function ChallengeCanvas({
   onProgress,
   onComplete,
   onFeedback,
+  onObjectTouch,
 }: ChallengeCanvasProps) {
   return (
     <Canvas
@@ -1430,13 +1436,14 @@ export default function ChallengeCanvas({
             onProgress={onProgress}
             onComplete={onComplete}
             onFeedback={onFeedback}
+            onObjectTouch={onObjectTouch}
           />
         )}
         {challenge === 2 && (
-          <MetalChallenge reducedMotion={reducedMotion} onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} />
+          <MetalChallenge reducedMotion={reducedMotion} onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} onObjectTouch={onObjectTouch} />
         )}
         {challenge === 3 && (
-          <CarChallenge reducedMotion={reducedMotion} onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} />
+          <CarChallenge reducedMotion={reducedMotion} onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} onObjectTouch={onObjectTouch} />
         )}
       </ResponsiveStage>
     </Canvas>

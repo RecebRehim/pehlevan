@@ -212,8 +212,8 @@ export default function Home() {
   );
 
   useEffect(() => {
-    const voice = new Audio("/audio/elmin-abi-loop.m4a");
-    voice.loop = true;
+    const voice = new Audio("/audio/elmin-abi-bax-abi.m4a");
+    voice.loop = false;
     voice.preload = "auto";
     voice.volume = 0.92;
     realVoiceRef.current = voice;
@@ -224,8 +224,9 @@ export default function Home() {
     };
   }, []);
 
-  const continueRealVoice = useCallback(() => {
+  const playRealVoiceOnce = useCallback(() => {
     if (!soundEnabled || !realVoiceRef.current) return;
+    realVoiceRef.current.currentTime = 0;
     void realVoiceRef.current.play().catch(() => undefined);
   }, [soundEnabled]);
 
@@ -285,10 +286,7 @@ export default function Home() {
   const progressValue = progress;
 
   return (
-    <main
-      className={`experience challenge-${challenge} ${transitioning ? "is-transitioning" : ""}`}
-      onPointerDownCapture={continueRealVoice}
-    >
+    <main className={`experience challenge-${challenge} ${transitioning ? "is-transitioning" : ""}`}>
       <div className="ambient-orb ambient-orb-a" />
       <div className="ambient-orb ambient-orb-b" />
       <div className="grain" />
@@ -306,8 +304,10 @@ export default function Home() {
           className="sound-toggle"
           aria-pressed={soundEnabled}
           onClick={() => setSoundEnabled((current) => {
-            if (current) realVoiceRef.current?.pause();
-            else void realVoiceRef.current?.play().catch(() => undefined);
+            if (current && realVoiceRef.current) {
+              realVoiceRef.current.pause();
+              realVoiceRef.current.currentTime = 0;
+            }
             return !current;
           })}
         >
@@ -348,6 +348,7 @@ export default function Home() {
             onProgress={handleProgress}
             onComplete={handleComplete}
             onFeedback={feedback}
+            onObjectTouch={playRealVoiceOnce}
           />
         </div>
 
