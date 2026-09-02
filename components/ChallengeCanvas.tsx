@@ -343,6 +343,346 @@ function FruitBurst({ burst, reducedMotion }: { burst: Burst; reducedMotion: boo
   );
 }
 
+function createCourtyardTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1024;
+  canvas.height = 512;
+  const context = canvas.getContext("2d")!;
+  const gradient = context.createLinearGradient(0, 0, 0, canvas.height);
+  gradient.addColorStop(0, "#b9774f");
+  gradient.addColorStop(0.58, "#9d5d3f");
+  gradient.addColorStop(1, "#78442f");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const random = seededRandom(8106);
+  const brickHeight = 58;
+  const brickWidth = 132;
+  for (let row = 0; row < 10; row += 1) {
+    const offset = row % 2 === 0 ? -brickWidth / 2 : 0;
+    for (let column = -1; column < 10; column += 1) {
+      const x = column * brickWidth + offset;
+      const y = row * brickHeight;
+      const lightness = Math.round(random() * 22 - 11);
+      context.fillStyle = `rgb(${151 + lightness}, ${82 + lightness}, ${57 + lightness})`;
+      context.fillRect(x + 4, y + 4, brickWidth - 8, brickHeight - 8);
+      context.strokeStyle = "rgba(66,35,26,.28)";
+      context.lineWidth = 2;
+      context.strokeRect(x + 5, y + 5, brickWidth - 10, brickHeight - 10);
+      for (let fleck = 0; fleck < 8; fleck += 1) {
+        context.fillStyle = random() > 0.48 ? "rgba(255,214,165,.08)" : "rgba(55,24,18,.1)";
+        context.fillRect(x + 10 + random() * (brickWidth - 24), y + 9 + random() * (brickHeight - 20), 2, 2);
+      }
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  return texture;
+}
+
+function CourtyardSet() {
+  const wallTexture = useMemo(createCourtyardTexture, []);
+  useEffect(() => () => wallTexture.dispose(), [wallTexture]);
+
+  return (
+    <group>
+      <mesh position={[0, 0.45, -1.68]} receiveShadow>
+        <planeGeometry args={[7.2, 4.1]} />
+        <meshStandardMaterial map={wallTexture} roughness={0.96} color="#d19a72" transparent opacity={0.86} />
+      </mesh>
+      <mesh position={[-2.15, 0.73, -1.645]}>
+        <planeGeometry args={[1.22, 1.3]} />
+        <meshStandardMaterial color="#211f1b" roughness={0.92} />
+      </mesh>
+      {[-2.53, -2.34, -2.15, -1.96, -1.77].map((x) => (
+        <mesh key={x} position={[x, 0.73, -1.59]} castShadow>
+          <cylinderGeometry args={[0.026, 0.026, 1.36, 8]} />
+          <meshStandardMaterial color="#36342e" metalness={0.62} roughness={0.55} />
+        </mesh>
+      ))}
+      {[-1.54, -1.1, -0.66, -0.22].map((y) => (
+        <mesh key={y} position={[-2.15, y + 1.6, -1.585]} rotation={[0, 0, Math.PI / 2]} castShadow>
+          <cylinderGeometry args={[0.024, 0.024, 1.27, 8]} />
+          <meshStandardMaterial color="#36342e" metalness={0.62} roughness={0.55} />
+        </mesh>
+      ))}
+      <mesh position={[0, -1.18, -0.12]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[8.2, 7]} />
+        <meshStandardMaterial color="#7b6b59" roughness={0.98} />
+      </mesh>
+      <mesh position={[0, -1.165, 0.18]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[3.25, 2.65]} />
+        <meshStandardMaterial color="#7b2e2a" roughness={0.92} />
+      </mesh>
+      {[0.42, 0.72, 1.05].map((radius, index) => (
+        <mesh key={radius} position={[0, -1.15 + index * 0.001, 0.18]} rotation={[-Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[radius, 0.025, 8, 52]} />
+          <meshStandardMaterial color={index % 2 ? "#d5b179" : "#392824"} roughness={0.9} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function Muscle({ length, radius, color = "#b97857" }: { length: number; radius: number; color?: string }) {
+  return (
+    <mesh castShadow>
+      <capsuleGeometry args={[radius, length, 10, 20]} />
+      <meshStandardMaterial color={color} roughness={0.55} />
+    </mesh>
+  );
+}
+
+function StrongmanCharacter({
+  pressure,
+  burst,
+  reducedMotion,
+}: {
+  pressure: number;
+  burst: boolean;
+  reducedMotion: boolean;
+}) {
+  const root = useRef<THREE.Group>(null);
+  const torso = useRef<THREE.Group>(null);
+  const head = useRef<THREE.Group>(null);
+  const leftUpper = useRef<THREE.Group>(null);
+  const rightUpper = useRef<THREE.Group>(null);
+  const leftFore = useRef<THREE.Group>(null);
+  const rightFore = useRef<THREE.Group>(null);
+  const motion = useRef(0);
+  const burstStarted = useRef<number | null>(null);
+
+  useFrame((state, delta) => {
+    motion.current = THREE.MathUtils.damp(motion.current, pressure, 8.5, delta);
+    const squeeze = smoothstep(0.02, 1, motion.current);
+    if (burst && burstStarted.current === null) burstStarted.current = state.clock.elapsedTime;
+    const burstAge = burstStarted.current === null ? 0 : state.clock.elapsedTime - burstStarted.current;
+    const recoil = burst && !reducedMotion ? Math.sin(burstAge * 21) * Math.exp(-burstAge * 5.5) * 0.045 : 0;
+    const breath = reducedMotion ? 0 : Math.sin(state.clock.elapsedTime * 1.65) * 0.012;
+    if (root.current) {
+      root.current.position.y = -0.02 + breath * 0.35 + recoil;
+      root.current.rotation.x = THREE.MathUtils.damp(root.current.rotation.x, -0.025 - squeeze * 0.11, 6, delta);
+    }
+    if (torso.current) torso.current.scale.set(1 + squeeze * 0.025, 1 + breath, 1 + squeeze * 0.055);
+    if (head.current) {
+      head.current.rotation.x = THREE.MathUtils.damp(head.current.rotation.x, 0.02 + squeeze * 0.13, 7, delta);
+      head.current.rotation.z = reducedMotion ? 0 : Math.sin(state.clock.elapsedTime * 0.65) * 0.012;
+    }
+    if (leftUpper.current && rightUpper.current && leftFore.current && rightFore.current) {
+      leftUpper.current.rotation.z = THREE.MathUtils.damp(leftUpper.current.rotation.z, -0.28 + squeeze * 0.16, 8, delta);
+      rightUpper.current.rotation.z = THREE.MathUtils.damp(rightUpper.current.rotation.z, 0.28 - squeeze * 0.16, 8, delta);
+      leftFore.current.rotation.z = THREE.MathUtils.damp(leftFore.current.rotation.z, 0.74 + squeeze * 0.3, 9, delta);
+      rightFore.current.rotation.z = THREE.MathUtils.damp(rightFore.current.rotation.z, -0.74 - squeeze * 0.3, 9, delta);
+    }
+  });
+
+  const skin = "#b97857";
+  const skinLight = "#c88965";
+
+  return (
+    <group ref={root} position={[0, -0.02, -0.58]}>
+      <group ref={torso}>
+        <RoundedBox args={[1.48, 1.28, 0.68]} radius={0.29} smoothness={5} position={[0, 0.37, 0]} castShadow>
+          <meshStandardMaterial color="#111312" roughness={0.66} />
+        </RoundedBox>
+        <mesh position={[0, 0.72, 0.24]} scale={[0.72, 0.42, 0.3]} castShadow>
+          <sphereGeometry args={[1, 32, 24]} />
+          <meshStandardMaterial color="#171918" roughness={0.62} />
+        </mesh>
+        <mesh position={[0, -0.1, 0.24]} scale={[0.63, 0.5, 0.3]} castShadow>
+          <sphereGeometry args={[1, 32, 24]} />
+          <meshStandardMaterial color="#0d0f0e" roughness={0.72} />
+        </mesh>
+      </group>
+
+      <mesh position={[0, -0.34, 0]} scale={[0.67, 0.28, 0.38]} castShadow>
+        <sphereGeometry args={[1, 30, 20]} />
+        <meshStandardMaterial color="#111312" roughness={0.74} />
+      </mesh>
+      {[-0.34, 0.34].map((x) => (
+        <group key={x} position={[x, -0.91, 0]}>
+          <mesh castShadow>
+            <capsuleGeometry args={[0.23, 0.74, 8, 16]} />
+            <meshStandardMaterial color="#171918" roughness={0.75} />
+          </mesh>
+          <mesh position={[0, -0.52, 0.09]} scale={[0.29, 0.15, 0.46]} castShadow>
+            <sphereGeometry args={[1, 22, 14]} />
+            <meshStandardMaterial color="#171918" roughness={0.8} />
+          </mesh>
+        </group>
+      ))}
+
+      <mesh position={[0, 1.1, -0.01]} scale={[0.25, 0.25, 0.22]} castShadow>
+        <cylinderGeometry args={[1, 1.08, 1, 24]} />
+        <meshStandardMaterial color={skin} roughness={0.58} />
+      </mesh>
+      <group ref={head} position={[0, 1.49, 0.02]}>
+        <mesh scale={[0.39, 0.45, 0.36]} castShadow>
+          <sphereGeometry args={[1, 40, 32]} />
+          <meshStandardMaterial color={skinLight} roughness={0.52} />
+        </mesh>
+        <mesh position={[0, -0.14, 0.12]} scale={[0.34, 0.27, 0.29]} castShadow>
+          <sphereGeometry args={[1, 30, 22]} />
+          <meshStandardMaterial color={skin} roughness={0.58} />
+        </mesh>
+        {[-0.39, 0.39].map((x) => (
+          <mesh key={x} position={[x, -0.02, 0]} scale={[0.07, 0.13, 0.07]} castShadow>
+            <sphereGeometry args={[1, 18, 12]} />
+            <meshStandardMaterial color={skin} roughness={0.62} />
+          </mesh>
+        ))}
+        {[-0.13, 0.13].map((x) => (
+          <group key={x}>
+            <mesh position={[x, 0.045, 0.342]} scale={[0.052, 0.032, 0.025]}>
+              <sphereGeometry args={[1, 18, 12]} />
+              <meshStandardMaterial color="#17110f" roughness={0.55} />
+            </mesh>
+            <mesh position={[x, 0.115, 0.34]} rotation={[0, 0, x < 0 ? -0.13 : 0.13]}>
+              <boxGeometry args={[0.18, 0.035, 0.035]} />
+              <meshStandardMaterial color="#332019" roughness={0.72} />
+            </mesh>
+          </group>
+        ))}
+        <mesh position={[0, -0.03, 0.385]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+          <capsuleGeometry args={[0.055, 0.12, 6, 12]} />
+          <meshStandardMaterial color="#a9694f" roughness={0.62} />
+        </mesh>
+        <mesh position={[0, -0.22, 0.363]}>
+          <boxGeometry args={[0.19, 0.027, 0.025]} />
+          <meshStandardMaterial color="#5d3028" roughness={0.8} />
+        </mesh>
+      </group>
+
+      <group ref={leftUpper} position={[-0.78, 0.79, 0.03]} rotation={[-0.72, 0, -0.28]}>
+        <mesh position={[0, -0.03, 0]} scale={[0.33, 0.31, 0.31]} castShadow>
+          <sphereGeometry args={[1, 28, 20]} />
+          <meshStandardMaterial color="#101211" roughness={0.65} />
+        </mesh>
+        <group position={[0, -0.37, 0]}><Muscle length={0.45} radius={0.2} color={skin} /></group>
+        <group ref={leftFore} position={[0, -0.71, 0]} rotation={[0.1, 0, 0.74]}>
+          <group position={[0, -0.34, 0]}><Muscle length={0.48} radius={0.185} color={skinLight} /></group>
+          <mesh position={[0, -0.69, 0.02]} scale={[0.2, 0.25, 0.15]} castShadow>
+            <sphereGeometry args={[1, 22, 16]} />
+            <meshStandardMaterial color={skinLight} roughness={0.6} />
+          </mesh>
+        </group>
+      </group>
+      <group ref={rightUpper} position={[0.78, 0.79, 0.03]} rotation={[-0.72, 0, 0.28]}>
+        <mesh position={[0, -0.03, 0]} scale={[0.33, 0.31, 0.31]} castShadow>
+          <sphereGeometry args={[1, 28, 20]} />
+          <meshStandardMaterial color="#101211" roughness={0.65} />
+        </mesh>
+        <group position={[0, -0.37, 0]}><Muscle length={0.45} radius={0.2} color={skin} /></group>
+        <group ref={rightFore} position={[0, -0.71, 0]} rotation={[0.1, 0, -0.74]}>
+          <group position={[0, -0.34, 0]}><Muscle length={0.48} radius={0.185} color={skinLight} /></group>
+          <mesh position={[0, -0.69, 0.02]} scale={[0.2, 0.25, 0.15]} castShadow>
+            <sphereGeometry args={[1, 22, 16]} />
+            <meshStandardMaterial color={skinLight} roughness={0.6} />
+          </mesh>
+        </group>
+      </group>
+    </group>
+  );
+}
+
+function WatermelonStand() {
+  return (
+    <group position={[0, 0, -0.02]}>
+      <mesh position={[0, -0.78, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+        <torusGeometry args={[0.68, 0.045, 12, 64]} />
+        <meshStandardMaterial color="#171817" metalness={0.72} roughness={0.42} />
+      </mesh>
+      <mesh position={[0, -1.02, 0]} castShadow>
+        <cylinderGeometry args={[0.075, 0.11, 0.5, 16]} />
+        <meshStandardMaterial color="#171817" metalness={0.72} roughness={0.42} />
+      </mesh>
+      {[0, Math.PI / 2].map((rotation) => (
+        <group key={rotation} rotation={[0, rotation, 0]}>
+          <mesh position={[-0.3, -0.96, 0]} rotation={[0, 0, -0.52]} castShadow>
+            <cylinderGeometry args={[0.035, 0.035, 0.65, 10]} />
+            <meshStandardMaterial color="#20211f" metalness={0.7} roughness={0.46} />
+          </mesh>
+          <mesh position={[0.3, -0.96, 0]} rotation={[0, 0, 0.52]} castShadow>
+            <cylinderGeometry args={[0.035, 0.035, 0.65, 10]} />
+            <meshStandardMaterial color="#20211f" metalness={0.7} roughness={0.46} />
+          </mesh>
+        </group>
+      ))}
+      <mesh position={[0, -1.16, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+        <torusGeometry args={[0.46, 0.04, 10, 48]} />
+        <meshStandardMaterial color="#171817" metalness={0.72} roughness={0.42} />
+      </mesh>
+    </group>
+  );
+}
+
+function WatermelonExplosion({ active, reducedMotion }: { active: boolean; reducedMotion: boolean }) {
+  const left = useRef<THREE.Group>(null);
+  const right = useRef<THREE.Group>(null);
+  const pieces = useRef<(THREE.Mesh | null)[]>([]);
+  const startTime = useRef<number | null>(null);
+  const fragments = useMemo(() => {
+    const random = seededRandom(7719);
+    return Array.from({ length: reducedMotion ? 16 : 34 }, (_, index) => ({
+      start: new THREE.Vector3((random() - 0.5) * 0.7, (random() - 0.5) * 0.55, (random() - 0.5) * 0.5),
+      velocity: new THREE.Vector3((random() - 0.5) * 3.7, 0.8 + random() * 2.7, 1.2 + random() * 2.5),
+      spin: new THREE.Vector3(random() * 9, random() * 9, random() * 9),
+      scale: 0.035 + random() * 0.095,
+      color: index % 6 === 0 ? "#27582b" : index % 9 === 0 ? "#c5df9d" : "#e13f50",
+    }));
+  }, [reducedMotion]);
+
+  useFrame((state) => {
+    if (!active) return;
+    if (startTime.current === null) startTime.current = state.clock.elapsedTime;
+    const age = state.clock.elapsedTime - startTime.current;
+    const fall = age * age * 2.2;
+    if (left.current) {
+      left.current.position.set(-0.19 - age * 0.75, age * 0.4 - fall * 0.23, age * 0.48);
+      left.current.rotation.set(age * 0.8, -age * 1.4, age * 1.5);
+    }
+    if (right.current) {
+      right.current.position.set(0.19 + age * 0.75, age * 0.48 - fall * 0.23, age * 0.56);
+      right.current.rotation.set(-age * 0.65, age * 1.25, -age * 1.4);
+    }
+    fragments.forEach((fragment, index) => {
+      const mesh = pieces.current[index];
+      if (!mesh) return;
+      mesh.position.copy(fragment.start).addScaledVector(fragment.velocity, age);
+      mesh.position.y -= fall;
+      mesh.rotation.set(fragment.spin.x * age, fragment.spin.y * age, fragment.spin.z * age);
+      const fade = clamp(1 - Math.max(0, age - 1.15) / 0.7);
+      mesh.scale.setScalar(fragment.scale * Math.max(0.001, fade));
+    });
+  });
+
+  if (!active) return null;
+  return (
+    <group position={[0, -0.02, 0.34]}>
+      {([-1, 1] as const).map((side) => (
+        <group key={side} ref={side < 0 ? left : right}>
+          <mesh scale={[0.52, 0.88, 0.72]} castShadow>
+            <dodecahedronGeometry args={[0.92, 2]} />
+            <meshStandardMaterial color="#2d6f32" roughness={0.52} />
+          </mesh>
+          <mesh position={[side * -0.08, 0, 0.08]} scale={[0.43, 0.76, 0.64]} castShadow>
+            <dodecahedronGeometry args={[0.92, 1]} />
+            <meshStandardMaterial color="#dd4050" roughness={0.6} />
+          </mesh>
+        </group>
+      ))}
+      {fragments.map((fragment, index) => (
+        <mesh key={index} ref={(node) => { pieces.current[index] = node; }} castShadow>
+          <dodecahedronGeometry args={[1, 0]} />
+          <meshStandardMaterial color={fragment.color} roughness={0.62} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 function WatermelonChallenge({
   reducedMotion,
   onProgress,
@@ -350,11 +690,16 @@ function WatermelonChallenge({
   onFeedback,
 }: Omit<ChallengeCanvasProps, "challenge">) {
   const shell = useRef<THREE.Mesh>(null);
-  const rig = useRef<THREE.Group>(null);
-  const velocity = useRef(new THREE.Vector3());
-  const angularVelocity = useRef(new THREE.Vector3());
+  const fruitRig = useRef<THREE.Group>(null);
+  const pressureRef = useRef(0);
+  const holding = useRef(false);
+  const burstRef = useRef(false);
+  const completionSent = useRef(false);
+  const lastPublished = useRef(0);
+  const lastDamageStage = useRef(0);
   const [hovered, setHovered] = useState(false);
-  const [hits, setHits] = useState(0);
+  const [pressure, setPressure] = useState(0);
+  const [burst, setBurst] = useState(false);
   const [damages, setDamages] = useState<Damage[]>([]);
   const [bursts, setBursts] = useState<Burst[]>([]);
   const fleshTexture = useMemo(createFleshTexture, []);
@@ -367,83 +712,88 @@ function WatermelonChallenge({
     };
   }, [hovered]);
 
+  const addPressure = useCallback((amount: number) => {
+    if (burstRef.current) return;
+    const previous = pressureRef.current;
+    const next = clamp(previous + amount);
+    pressureRef.current = next;
+    const stage = Math.min(5, Math.ceil(next * 5));
+    if (stage > lastDamageStage.current) {
+      lastDamageStage.current = stage;
+      const side = stage % 2 === 0 ? -1 : 1;
+      const point = new THREE.Vector3(side * (0.88 - stage * 0.025), 0.15 - stage * 0.07, 0.44).normalize();
+      const id = performance.now() + stage;
+      setDamages((current) => [...current, {
+        id,
+        point: point.toArray() as [number, number, number],
+        normal: point.toArray() as [number, number, number],
+        radius: 0.035 + stage * 0.018,
+        angle: side * (0.3 + stage * 0.24),
+      }]);
+      setBursts((current) => [...current.slice(-2), {
+        id,
+        origin: point.clone().multiplyScalar(1.02).toArray() as [number, number, number],
+        normal: [0, 0.15, 1],
+        power: 0.38 + stage * 0.055,
+      }]);
+      onFeedback("fruit", 0.34 + stage * 0.1);
+    }
+    if (next - lastPublished.current >= 0.018 || next === 1) {
+      lastPublished.current = next;
+      setPressure(next);
+      onProgress(next, stage);
+    }
+    if (next >= 1 && !completionSent.current) {
+      completionSent.current = true;
+      burstRef.current = true;
+      holding.current = false;
+      setPressure(1);
+      setBurst(true);
+      onProgress(1, 5);
+      onFeedback("fruit", 1);
+      onComplete();
+    }
+  }, [onComplete, onFeedback, onProgress]);
+
   useFrame((state, delta) => {
-    const group = rig.current;
-    if (!group) return;
-    const damp = Math.exp(-delta * 8.2);
-    velocity.current.multiplyScalar(damp);
-    angularVelocity.current.multiplyScalar(Math.exp(-delta * 7.2));
-    group.position.addScaledVector(velocity.current, delta);
-    group.rotation.x += angularVelocity.current.x * delta;
-    group.rotation.y += angularVelocity.current.y * delta;
-    group.rotation.z += angularVelocity.current.z * delta;
-    group.position.lerp(new THREE.Vector3(0, -0.08 + Math.sin(state.clock.elapsedTime * 1.2) * (reducedMotion ? 0 : 0.025), 0), 1 - Math.exp(-delta * 5));
-    group.rotation.x = THREE.MathUtils.damp(group.rotation.x, -0.05, 4, delta);
-    group.rotation.y = THREE.MathUtils.damp(group.rotation.y, state.clock.elapsedTime * 0.08, 3, delta);
-    group.rotation.z = THREE.MathUtils.damp(group.rotation.z, 0.035, 4, delta);
-    const targetScale = hovered ? 1.035 : 1;
-    group.scale.setScalar(THREE.MathUtils.damp(group.scale.x, targetScale, 8, delta));
+    if (holding.current && !burstRef.current) addPressure(delta * 0.46);
+    if (!fruitRig.current) return;
+    const squeeze = smoothstep(0.02, 1, pressureRef.current);
+    const pulse = reducedMotion ? 0 : Math.sin(state.clock.elapsedTime * 11) * squeeze * 0.008;
+    fruitRig.current.scale.x = 1.04 * (1 - squeeze * 0.29) + pulse;
+    fruitRig.current.scale.y = 1.05 * (1 + squeeze * 0.11);
+    fruitRig.current.scale.z = 0.99 * (1 + squeeze * 0.09);
+    fruitRig.current.rotation.z = Math.sin(state.clock.elapsedTime * 9) * squeeze * (reducedMotion ? 0.002 : 0.014);
+    fruitRig.current.position.y = -0.02 - squeeze * 0.055;
+    if (shell.current) shell.current.visible = !burstRef.current;
   });
 
-  const handleImpact = useCallback(
-    (event: ThreeEvent<MouseEvent>) => {
-      event.stopPropagation();
-      if (!shell.current) return;
-      const point = shell.current.worldToLocal(event.point.clone());
-      const normal = point.clone().normalize();
-      const nextHit = hits + 1;
-      const damageRadius = nextHit === 1 ? 0 : Math.min(0.225, 0.045 + nextHit * 0.014);
-      const id = performance.now() + nextHit;
+  const onPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
+    event.stopPropagation();
+    (event.target as Element).setPointerCapture?.(event.pointerId);
+    if (burstRef.current) {
+      const id = performance.now();
+      setBursts((current) => [...current.slice(-3), { id, origin: [0, -0.03, 0.82], normal: [0, 0.2, 1], power: 0.72 }]);
+      onFeedback("fruit", 0.58);
+      return;
+    }
+    holding.current = true;
+    addPressure(0.19);
+  }, [addPressure, onFeedback]);
 
-      setDamages((current) => {
-        if (current.length < MAX_DAMAGE) {
-          return [
-            ...current,
-            {
-              id,
-              point: point.toArray() as [number, number, number],
-              normal: normal.toArray() as [number, number, number],
-              radius: damageRadius,
-              angle: ((nextHit * 2.17) % Math.PI) - Math.PI / 2,
-            },
-          ];
-        }
-        let nearestIndex = 0;
-        let nearestDistance = Infinity;
-        current.forEach((damage, index) => {
-          const distance = new THREE.Vector3(...damage.point).distanceTo(point);
-          if (distance < nearestDistance) {
-            nearestDistance = distance;
-            nearestIndex = index;
-          }
-        });
-        return current.map((damage, index) =>
-          index === nearestIndex ? { ...damage, radius: Math.min(0.285, damage.radius + 0.035) } : damage,
-        );
-      });
-      setBursts((current) => [
-        ...current.slice(-3),
-        {
-          id,
-          origin: point.clone().multiplyScalar(1.03).toArray() as [number, number, number],
-          normal: normal.toArray() as [number, number, number],
-          power: 0.75 + Math.min(nextHit, 9) * 0.045,
-        },
-      ]);
-      setHits(nextHit);
-      onProgress(Math.min(nextHit / 12, 1), nextHit);
-      onFeedback("fruit", Math.min(1, 0.35 + nextHit * 0.07));
-      velocity.current.addScaledVector(normal, -0.32 - nextHit * 0.014);
-      angularVelocity.current.set((normal.y + 0.15) * 1.2, -normal.x * 1.35, normal.x * 1.55);
-      if (nextHit === 5) onComplete();
-    },
-    [hits, onComplete, onFeedback, onProgress],
-  );
+  const onPointerUp = useCallback((event: ThreeEvent<PointerEvent>) => {
+    event.stopPropagation();
+    (event.target as Element).releasePointerCapture?.(event.pointerId);
+    holding.current = false;
+  }, []);
 
   return (
-    <group position={[0, 0.02, 0]}>
-      <group ref={rig}>
-        <mesh scale={[1.09, 1.18, 1.03]}>
+    <group>
+      <CourtyardSet />
+      <StrongmanCharacter pressure={pressure} burst={burst} reducedMotion={reducedMotion} />
+      <WatermelonStand />
+      <group ref={fruitRig} position={[0, -0.02, 0.34]}>
+        <mesh scale={[0.86, 0.9, 0.83]}>
           <sphereGeometry args={[0.91, 72, 72]} />
           <meshPhysicalMaterial
             map={fleshTexture}
@@ -456,17 +806,11 @@ function WatermelonChallenge({
         </mesh>
         <mesh
           ref={shell}
-          scale={[1.1, 1.2, 1.04]}
+          scale={[0.86, 0.9, 0.83]}
           castShadow
           receiveShadow
-          onClick={handleImpact}
-          onPointerOver={(event) => {
-            event.stopPropagation();
-            setHovered(true);
-          }}
-          onPointerOut={() => setHovered(false)}
         >
-          <sphereGeometry args={[1, 96, 96]} />
+          <sphereGeometry args={[1, 80, 80]} />
           <WatermelonShellMaterial damages={damages} />
           {damages.map((damage) => (
             <DamageMark key={damage.id} damage={damage} />
@@ -475,11 +819,24 @@ function WatermelonChallenge({
             <FruitBurst key={burst.id} burst={burst} reducedMotion={reducedMotion} />
           ))}
         </mesh>
-        <mesh position={[0, 1.18, 0]} rotation={[0.08, 0, -0.22]} castShadow>
+        {!burst && <mesh position={[0, 0.93, 0]} rotation={[0.08, 0, -0.22]} castShadow>
           <cylinderGeometry args={[0.045, 0.075, 0.23, 12]} />
           <meshStandardMaterial color="#51472a" roughness={0.9} />
-        </mesh>
+        </mesh>}
       </group>
+      <WatermelonExplosion active={burst} reducedMotion={reducedMotion} />
+      <mesh
+        position={[0, -0.02, 0.36]}
+        scale={[1.06, 1.1, 1.02]}
+        onPointerDown={onPointerDown}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onPointerOver={(event) => { event.stopPropagation(); setHovered(true); }}
+        onPointerOut={() => { if (!holding.current) setHovered(false); }}
+      >
+        <sphereGeometry args={[0.92, 28, 24]} />
+        <meshBasicMaterial transparent opacity={0.001} depthWrite={false} />
+      </mesh>
     </group>
   );
 }
@@ -887,7 +1244,7 @@ function CarChallenge({ onProgress, onComplete, onFeedback }: Omit<ChallengeCanv
 function CameraRig({ challenge, reducedMotion }: { challenge: ChallengeNumber; reducedMotion: boolean }) {
   const { camera } = useThree();
   const target = useMemo(() => {
-    if (challenge === 1) return new THREE.Vector3(0, 0.25, 5.5);
+    if (challenge === 1) return new THREE.Vector3(0, 0.32, 7.15);
     if (challenge === 2) return new THREE.Vector3(0, 0.25, 7.05);
     return new THREE.Vector3(0, 0.55, 7.6);
   }, [challenge]);
@@ -912,7 +1269,7 @@ function ResponsiveStage({
   children: React.ReactNode;
 }) {
   const { viewport } = useThree();
-  const targetWidth = challenge === 3 ? 6.5 : challenge === 2 ? 6.25 : 4.7;
+  const targetWidth = challenge === 3 ? 6.5 : challenge === 2 ? 6.25 : 5.25;
   const scale = Math.min(1, viewport.width / targetWidth);
   return <group scale={scale}>{children}</group>;
 }

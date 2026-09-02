@@ -54,6 +54,22 @@ button {
     radial-gradient(circle at 52% 47%, #fafaf5 0, #efefe9 41%, #dfdfd7 100%);
 }
 
+.experience.challenge-1 {
+  --paper: #e7ded2;
+  --paper-bright: #f8f1e7;
+  background:
+    linear-gradient(115deg, rgba(255, 248, 235, 0.64), transparent 38%),
+    radial-gradient(circle at 52% 47%, #f0e6d9 0, #dfd2c3 44%, #c9b9a7 100%);
+}
+
+.challenge-1 .scene-copy {
+  top: clamp(92px, 13vh, 138px);
+}
+
+.challenge-1 .scene-copy h1 {
+  opacity: 0.84;
+}
+
 .experience::before,
 .experience::after {
   position: absolute;

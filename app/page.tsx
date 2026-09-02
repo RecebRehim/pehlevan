@@ -149,10 +149,10 @@ function synthFeedback(kind: FeedbackKind | "complete" | "transition", intensity
 const challengeContent = {
   1: {
     index: "01",
-    category: "ORGANIC / IMPACT",
-    lead: "BREAK",
+    category: "GRIP / PRESSURE",
+    lead: "CRUSH",
     tail: "IT.",
-    instruction: "CLICK ANYWHERE ON THE SURFACE",
+    instruction: "HOLD OR TAP THE WATERMELON",
   },
   2: {
     index: "02",
@@ -170,13 +170,13 @@ const challengeContent = {
   },
 } as const;
 
-function watermelonState(hits: number) {
-  if (hits === 0) return "SURFACE INTACT";
-  if (hits === 1) return "HAIRLINE FRACTURE";
-  if (hits <= 3) return "RIND COMPROMISED";
-  if (hits <= 5) return "STRUCTURAL FAILURE";
-  if (hits <= 9) return "CORE EXPOSED";
-  return "NEAR TOTAL DESTRUCTION";
+function watermelonState(progress: number) {
+  if (progress === 0) return "GRIP READY";
+  if (progress < 0.25) return "HANDS LOCKED";
+  if (progress < 0.52) return "RIND COMPRESSING";
+  if (progress < 0.78) return "PRESSURE CRITICAL";
+  if (progress < 1) return "STRUCTURAL FAILURE";
+  return "WATERMELON OBLITERATED";
 }
 
 function useReducedMotion() {
@@ -252,14 +252,14 @@ export default function Home() {
   };
 
   const status = useMemo(() => {
-    if (challenge === 1) return watermelonState(hits);
+    if (challenge === 1) return watermelonState(progress);
     if (challenge === 2) return progress > 0.87 ? "PERMANENT DEFORMATION" : `LOAD ${(progress * 100).toFixed(0)}%`;
     if (progress < 0.26) return "SUSPENSION LOADED";
     if (progress < 0.62) return "REAR AXLE UNWEIGHTED";
     return progress > 0.88 ? "REAR WHEELS CLEAR" : "CHASSIS ROTATING";
-  }, [challenge, hits, progress]);
+  }, [challenge, progress]);
 
-  const progressValue = challenge === 1 ? Math.min(hits / 12, 1) : progress;
+  const progressValue = progress;
 
   return (
     <main className={`experience challenge-${challenge} ${transitioning ? "is-transitioning" : ""}`}>
@@ -333,14 +333,14 @@ export default function Home() {
           </span>
           <div>
             <p>{content.instruction}</p>
-            <span>{challenge === 1 ? "DAMAGE ACCUMULATES · KEEP GOING" : "FORCE IS PERMANENT AFTER YIELD"}</span>
+            <span>{challenge === 1 ? "BUILD PRESSURE · MAKE HIM CRUSH IT" : "FORCE IS PERMANENT AFTER YIELD"}</span>
           </div>
         </div>
 
         <div className="readout" role="status" aria-live="polite">
           <div className="readout-head">
             <span>{status}</span>
-            <b>{challenge === 1 ? `${String(hits).padStart(2, "0")} HITS` : `${Math.round(progress * 100)}%`}</b>
+            <b>{challenge === 1 ? `${Math.round(progress * 100)}% GRIP` : `${Math.round(progress * 100)}%`}</b>
           </div>
           <div className="progress-track">
             <i style={{ transform: `scaleX(${progressValue})` }} />
@@ -354,7 +354,7 @@ export default function Home() {
               <i aria-hidden="true">↗</i>
             </button>
           ) : (
-            <span className="completion-target">TARGET · {challenge === 1 ? "05 HITS" : challenge === 2 ? "88% BEND" : "90% LIFT"}</span>
+            <span className="completion-target">TARGET · {challenge === 1 ? "100% CRUSH" : challenge === 2 ? "88% BEND" : "90% LIFT"}</span>
           )}
         </div>
       </footer>
