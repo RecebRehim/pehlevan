@@ -284,7 +284,7 @@ function FruitBurst({ burst, reducedMotion }: { burst: Burst; reducedMotion: boo
     if (Math.abs(normal.dot(tangent)) > 0.8) tangent.set(0, 1, 0);
     tangent.cross(normal).normalize();
     const bitangent = new THREE.Vector3().crossVectors(normal, tangent).normalize();
-    const count = reducedMotion ? 8 : 15;
+    const count = reducedMotion ? 4 : 8;
     return Array.from({ length: count }, (_, index) => {
       const spreadA = (random() - 0.5) * 1.9;
       const spreadB = (random() - 0.5) * 1.9;
@@ -510,6 +510,16 @@ function StrongmanCharacter({
           <sphereGeometry args={[1, 32, 24]} />
           <meshStandardMaterial color="#0d0f0e" roughness={0.72} />
         </mesh>
+        {[-0.1, 0, 0.1].map((x, index) => (
+          <mesh key={x} position={[x, 0.62 - index * 0.012, 0.548]} rotation={[0, 0, -0.18]}>
+            <boxGeometry args={[0.055, 0.22, 0.018]} />
+            <meshStandardMaterial color="#e7e7df" roughness={0.68} />
+          </mesh>
+        ))}
+        <mesh position={[0, 0.99, 0.22]} rotation={[Math.PI / 2, 0, 0]} scale={[1.2, 1, 0.42]}>
+          <torusGeometry args={[0.24, 0.035, 10, 32]} />
+          <meshStandardMaterial color="#262927" roughness={0.74} />
+        </mesh>
       </group>
 
       <mesh position={[0, -0.34, 0]} scale={[0.67, 0.28, 0.38]} castShadow>
@@ -542,6 +552,10 @@ function StrongmanCharacter({
           <sphereGeometry args={[1, 30, 22]} />
           <meshStandardMaterial color={skin} roughness={0.58} />
         </mesh>
+        <mesh position={[0, -0.18, 0.145]} scale={[0.335, 0.235, 0.292]}>
+          <sphereGeometry args={[1, 30, 22]} />
+          <meshStandardMaterial color="#704337" roughness={0.92} transparent opacity={0.22} depthWrite={false} />
+        </mesh>
         {[-0.39, 0.39].map((x) => (
           <mesh key={x} position={[x, -0.02, 0]} scale={[0.07, 0.13, 0.07]} castShadow>
             <sphereGeometry args={[1, 18, 12]} />
@@ -550,9 +564,13 @@ function StrongmanCharacter({
         ))}
         {[-0.13, 0.13].map((x) => (
           <group key={x}>
-            <mesh position={[x, 0.045, 0.342]} scale={[0.052, 0.032, 0.025]}>
+            <mesh position={[x, 0.045, 0.34]} scale={[0.068, 0.041, 0.023]}>
               <sphereGeometry args={[1, 18, 12]} />
-              <meshStandardMaterial color="#17110f" roughness={0.55} />
+              <meshStandardMaterial color="#eee5d8" roughness={0.48} />
+            </mesh>
+            <mesh position={[x, 0.045, 0.365]} scale={[0.026, 0.027, 0.014]}>
+              <sphereGeometry args={[1, 16, 10]} />
+              <meshStandardMaterial color="#261b18" roughness={0.48} />
             </mesh>
             <mesh position={[x, 0.115, 0.34]} rotation={[0, 0, x < 0 ? -0.13 : 0.13]}>
               <boxGeometry args={[0.18, 0.035, 0.035]} />
@@ -582,6 +600,12 @@ function StrongmanCharacter({
             <sphereGeometry args={[1, 22, 16]} />
             <meshStandardMaterial color={skinLight} roughness={0.6} />
           </mesh>
+          {[-0.095, -0.032, 0.032, 0.095].map((x, index) => (
+            <mesh key={x} position={[x, -0.82 + Math.abs(index - 1.5) * 0.012, 0.065]} rotation={[0.06, 0, -0.04]} castShadow>
+              <capsuleGeometry args={[0.027, 0.12 - Math.abs(index - 1.5) * 0.012, 5, 9]} />
+              <meshStandardMaterial color={skinLight} roughness={0.62} />
+            </mesh>
+          ))}
         </group>
       </group>
       <group ref={rightUpper} position={[0.78, 0.79, 0.03]} rotation={[-0.72, 0, 0.28]}>
@@ -596,6 +620,12 @@ function StrongmanCharacter({
             <sphereGeometry args={[1, 22, 16]} />
             <meshStandardMaterial color={skinLight} roughness={0.6} />
           </mesh>
+          {[-0.095, -0.032, 0.032, 0.095].map((x, index) => (
+            <mesh key={x} position={[x, -0.82 + Math.abs(index - 1.5) * 0.012, 0.065]} rotation={[0.06, 0, 0.04]} castShadow>
+              <capsuleGeometry args={[0.027, 0.12 - Math.abs(index - 1.5) * 0.012, 5, 9]} />
+              <meshStandardMaterial color={skinLight} roughness={0.62} />
+            </mesh>
+          ))}
         </group>
       </group>
     </group>
@@ -634,44 +664,23 @@ function WatermelonStand() {
   );
 }
 
-function WatermelonExplosion({ active, reducedMotion }: { active: boolean; reducedMotion: boolean }) {
+function WatermelonSplit({ active, reducedMotion }: { active: boolean; reducedMotion: boolean }) {
   const left = useRef<THREE.Group>(null);
   const right = useRef<THREE.Group>(null);
-  const pieces = useRef<(THREE.Mesh | null)[]>([]);
-  const startTime = useRef<number | null>(null);
-  const fragments = useMemo(() => {
-    const random = seededRandom(7719);
-    return Array.from({ length: reducedMotion ? 16 : 34 }, (_, index) => ({
-      start: new THREE.Vector3((random() - 0.5) * 0.7, (random() - 0.5) * 0.55, (random() - 0.5) * 0.5),
-      velocity: new THREE.Vector3((random() - 0.5) * 3.7, 0.8 + random() * 2.7, 1.2 + random() * 2.5),
-      spin: new THREE.Vector3(random() * 9, random() * 9, random() * 9),
-      scale: 0.035 + random() * 0.095,
-      color: index % 6 === 0 ? "#27582b" : index % 9 === 0 ? "#c5df9d" : "#e13f50",
-    }));
-  }, [reducedMotion]);
 
-  useFrame((state) => {
+  useFrame((_, delta) => {
     if (!active) return;
-    if (startTime.current === null) startTime.current = state.clock.elapsedTime;
-    const age = state.clock.elapsedTime - startTime.current;
-    const fall = age * age * 2.2;
+    const blend = reducedMotion ? 1 : 1 - Math.exp(-delta * 4.6);
     if (left.current) {
-      left.current.position.set(-0.19 - age * 0.75, age * 0.4 - fall * 0.23, age * 0.48);
-      left.current.rotation.set(age * 0.8, -age * 1.4, age * 1.5);
+      left.current.position.lerp(new THREE.Vector3(-0.42, -0.04, 0.03), blend);
+      left.current.rotation.z = THREE.MathUtils.damp(left.current.rotation.z, 0.12, 5, delta);
+      left.current.rotation.y = THREE.MathUtils.damp(left.current.rotation.y, -0.16, 5, delta);
     }
     if (right.current) {
-      right.current.position.set(0.19 + age * 0.75, age * 0.48 - fall * 0.23, age * 0.56);
-      right.current.rotation.set(-age * 0.65, age * 1.25, -age * 1.4);
+      right.current.position.lerp(new THREE.Vector3(0.42, -0.04, 0.03), blend);
+      right.current.rotation.z = THREE.MathUtils.damp(right.current.rotation.z, -0.12, 5, delta);
+      right.current.rotation.y = THREE.MathUtils.damp(right.current.rotation.y, 0.16, 5, delta);
     }
-    fragments.forEach((fragment, index) => {
-      const mesh = pieces.current[index];
-      if (!mesh) return;
-      mesh.position.copy(fragment.start).addScaledVector(fragment.velocity, age);
-      mesh.position.y -= fall;
-      mesh.rotation.set(fragment.spin.x * age, fragment.spin.y * age, fragment.spin.z * age);
-      const fade = clamp(1 - Math.max(0, age - 1.15) / 0.7);
-      mesh.scale.setScalar(fragment.scale * Math.max(0.001, fade));
-    });
   });
 
   if (!active) return null;
@@ -679,21 +688,34 @@ function WatermelonExplosion({ active, reducedMotion }: { active: boolean; reduc
     <group position={[0, -0.02, 0.34]}>
       {([-1, 1] as const).map((side) => (
         <group key={side} ref={side < 0 ? left : right}>
-          <mesh scale={[0.52, 0.88, 0.72]} castShadow>
-            <dodecahedronGeometry args={[0.92, 2]} />
-            <meshStandardMaterial color="#2d6f32" roughness={0.52} />
+          <mesh scale={[0.5, 0.86, 0.7]} castShadow>
+            <sphereGeometry args={[0.92, 42, 32]} />
+            <meshPhysicalMaterial color="#28672f" roughness={0.44} clearcoat={0.18} />
           </mesh>
-          <mesh position={[side * -0.08, 0, 0.08]} scale={[0.43, 0.76, 0.64]} castShadow>
-            <dodecahedronGeometry args={[0.92, 1]} />
-            <meshStandardMaterial color="#dd4050" roughness={0.6} />
+          <mesh position={[side * -0.035, 0, 0.045]} scale={[0.445, 0.79, 0.655]} castShadow>
+            <sphereGeometry args={[0.92, 40, 30]} />
+            <meshStandardMaterial color="#bfd89d" roughness={0.68} />
           </mesh>
+          <mesh position={[side * -0.06, 0, 0.095]} scale={[0.39, 0.72, 0.61]} castShadow>
+            <sphereGeometry args={[0.92, 40, 30]} />
+            <meshPhysicalMaterial color="#db3d4e" roughness={0.58} clearcoat={0.08} />
+          </mesh>
+          {Array.from({ length: 9 }, (_, index) => {
+            const column = index % 3;
+            const row = Math.floor(index / 3);
+            return (
+              <mesh
+                key={index}
+                position={[side * (-0.405 + column * 0.018), -0.28 + row * 0.28, 0.66 - Math.abs(column - 1) * 0.05]}
+                rotation={[0, side * 0.08, (index % 2 ? 1 : -1) * 0.3]}
+                scale={[0.026, 0.062, 0.018]}
+              >
+                <sphereGeometry args={[1, 12, 8]} />
+                <meshStandardMaterial color="#231013" roughness={0.72} />
+              </mesh>
+            );
+          })}
         </group>
-      ))}
-      {fragments.map((fragment, index) => (
-        <mesh key={index} ref={(node) => { pieces.current[index] = node; }} castShadow>
-          <dodecahedronGeometry args={[1, 0]} />
-          <meshStandardMaterial color={fragment.color} roughness={0.62} />
-        </mesh>
       ))}
     </group>
   );
@@ -781,6 +803,7 @@ function WatermelonChallenge({
     fruitRig.current.scale.z = 0.99 * (1 + squeeze * 0.09);
     fruitRig.current.rotation.z = Math.sin(state.clock.elapsedTime * 9) * squeeze * (reducedMotion ? 0.002 : 0.014);
     fruitRig.current.position.y = -0.02 - squeeze * 0.055;
+    fruitRig.current.visible = !burstRef.current;
     if (shell.current) shell.current.visible = !burstRef.current;
   });
 
@@ -840,7 +863,7 @@ function WatermelonChallenge({
           <meshStandardMaterial color="#51472a" roughness={0.9} />
         </mesh>}
       </group>
-      <WatermelonExplosion active={burst} reducedMotion={reducedMotion} />
+      <WatermelonSplit active={burst} reducedMotion={reducedMotion} />
       <mesh
         position={[0, -0.02, 0.36]}
         scale={[1.06, 1.1, 1.02]}
@@ -870,7 +893,15 @@ function makeBarSegments(bend: number, zOffset = 0) {
     const arch = Math.sin(t * Math.PI);
     const elastic = arch * bend * 1.22;
     const plasticKink = Math.pow(arch, 7) * Math.max(0, bend - 0.52) * 1.2;
-    return new THREE.Vector3(-2.28 + t * 4.56, elastic + plasticKink, zOffset + Math.sin(t * Math.PI * 2) * bend * 0.035);
+    const openBar = new THREE.Vector3(-2.28 + t * 4.56, elastic + plasticKink, zOffset + Math.sin(t * Math.PI * 2) * bend * 0.035);
+    const wrap = smoothstep(0.48, 0.98, bend);
+    const angle = -Math.PI / 2 + t * Math.PI * 2;
+    const coil = new THREE.Vector3(
+      -0.68 + Math.cos(angle) * (0.61 + Math.abs(zOffset) * 0.14),
+      0.08 + Math.sin(angle) * (0.66 + Math.abs(zOffset) * 0.12),
+      0.22 + zOffset + Math.sin(angle * 2) * 0.055,
+    );
+    return openBar.lerp(coil, wrap);
   });
   return points.slice(0, -1).map((point, index): BarSegment => {
     const next = points[index + 1];
@@ -894,7 +925,7 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback }: O
   const completionSent = useRef(false);
   const frontSegments = useMemo(() => makeBarSegments(bend, 0.17), [bend]);
   const backSegments = useMemo(() => makeBarSegments(bend, -0.17), [bend]);
-  const centerHeight = bend * 1.22 + Math.max(0, bend - 0.52) * 1.2;
+  const handlePoint = frontSegments[Math.floor(frontSegments.length / 2)]?.position ?? new THREE.Vector3();
 
   useLayoutEffect(() => {
     const matrix = new THREE.Matrix4();
@@ -990,7 +1021,7 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback }: O
         <meshPhysicalMaterial color="#545a5a" metalness={0.88} roughness={0.38} clearcoat={0.18} />
       </instancedMesh>
 
-      <group position={[0, centerHeight, 0.22]}>
+      <group position={handlePoint}>
         <mesh
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -1018,7 +1049,7 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback }: O
         <Sparkles
           count={Math.round(8 + bend * 9)}
           scale={[1.35, 0.85, 0.6]}
-          position={[0, centerHeight, 0.2]}
+          position={handlePoint}
           size={2.4}
           speed={0.9}
           color="#f0ff79"
@@ -1187,6 +1218,24 @@ function CarModel({ lift, onPointerDown, onPointerMove, onPointerUp, dragging }:
         <mesh position={[1.87, 0.08, 1.13]}>
           <boxGeometry args={[0.07, 0.24, 0.22]} />
           <meshPhysicalMaterial color="#a91e2d" emissive="#5c0712" emissiveIntensity={0.28} roughness={0.25} />
+        </mesh>
+        <mesh position={[1.936, -0.08, 0.58]} castShadow>
+          <boxGeometry args={[0.034, 0.18, 0.52]} />
+          <meshPhysicalMaterial color="#e9e6dc" metalness={0.12} roughness={0.36} clearcoat={0.34} />
+        </mesh>
+        <mesh position={[1.958, -0.08, 0.58]}>
+          <boxGeometry args={[0.02, 0.095, 0.4]} />
+          <meshStandardMaterial color="#222a2d" roughness={0.5} />
+        </mesh>
+        {[-0.1, 0, 0.1].map((z, index) => (
+          <mesh key={z} position={[1.975, 0.22 - index * 0.018, 0.58 + z]} rotation={[0, 0, -0.22]}>
+            <boxGeometry args={[0.018, 0.11, 0.025]} />
+            <meshPhysicalMaterial color="#b9bdbb" metalness={0.92} roughness={0.2} />
+          </mesh>
+        ))}
+        <mesh position={[1.93, -0.42, 0.12]} rotation={[0, 0, Math.PI / 2]} castShadow>
+          <cylinderGeometry args={[0.055, 0.065, 0.34, 16]} />
+          <meshStandardMaterial color="#353a3a" metalness={0.88} roughness={0.46} />
         </mesh>
 
         <Suspension x={-1.35} wheelY={-0.56} z={0.64} />

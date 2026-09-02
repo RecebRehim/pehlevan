@@ -14,28 +14,6 @@ type AudioWindow = Window & { webkitAudioContext?: BrowserAudioContext };
 
 let sharedAudioContext: AudioContext | null = null;
 let sharedNoise: AudioBuffer | null = null;
-let memeLineIndex = 0;
-let lastMemeLineAt = 0;
-
-function speakMemeLine(kind: "touch" | "burst") {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-  const now = performance.now();
-  if (kind === "touch" && now - lastMemeLineAt < 140) return;
-  lastMemeLineAt = now;
-  const touchLines = ["Abi! Bax, abi!", "Abi, abi! Bax!", "Bax abi!", "Abi! Abi!"];
-  const text = kind === "burst" ? "Abi! Abi! Abi! Bax, abi!" : touchLines[memeLineIndex++ % touchLines.length];
-  const utterance = new SpeechSynthesisUtterance(text);
-  const voices = window.speechSynthesis.getVoices();
-  const voice = voices.find((candidate) => candidate.lang.toLowerCase().startsWith("az"))
-    ?? voices.find((candidate) => candidate.lang.toLowerCase().startsWith("tr"));
-  if (voice) utterance.voice = voice;
-  utterance.lang = voice?.lang ?? "tr-TR";
-  utterance.rate = kind === "burst" ? 1.18 : 1.25;
-  utterance.pitch = 0.82;
-  utterance.volume = 0.9;
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(utterance);
-}
 
 function audioContext() {
   if (typeof window === "undefined") return null;
@@ -171,10 +149,10 @@ function synthFeedback(kind: FeedbackKind | "complete" | "transition", intensity
 const challengeContent = {
   1: {
     index: "01",
-    category: "GRIP / PRESSURE",
-    lead: "CRUSH",
+    category: "FINGER / PRESSURE",
+    lead: "OPEN",
     tail: "IT.",
-    instruction: "HOLD OR TAP THE WATERMELON",
+    instruction: "HOLD OR TAP TO PRESS THE RIND",
   },
   2: {
     index: "02",
@@ -198,7 +176,7 @@ function watermelonState(progress: number) {
   if (progress < 0.52) return "RIND COMPRESSING";
   if (progress < 0.78) return "PRESSURE CRITICAL";
   if (progress < 1) return "STRUCTURAL FAILURE";
-  return "WATERMELON OBLITERATED";
+  return "WATERMELON OPENED";
 }
 
 function useReducedMotion() {
@@ -222,6 +200,7 @@ export default function Home() {
   const [transitioning, setTransitioning] = useState(false);
   const completionRef = useRef(false);
   const transitionTimers = useRef<number[]>([]);
+  const realVoiceRef = useRef<HTMLAudioElement | null>(null);
   const reducedMotion = useReducedMotion();
   const content = challengeContent[challenge];
 
@@ -232,11 +211,28 @@ export default function Home() {
     [],
   );
 
+  useEffect(() => {
+    const voice = new Audio("/audio/elmin-abi-loop.m4a");
+    voice.loop = true;
+    voice.preload = "auto";
+    voice.volume = 0.92;
+    realVoiceRef.current = voice;
+    return () => {
+      voice.pause();
+      voice.removeAttribute("src");
+      realVoiceRef.current = null;
+    };
+  }, []);
+
+  const continueRealVoice = useCallback(() => {
+    if (!soundEnabled || !realVoiceRef.current) return;
+    void realVoiceRef.current.play().catch(() => undefined);
+  }, [soundEnabled]);
+
   const feedback = useCallback(
     (kind: FeedbackKind, intensity: number) => {
       if (soundEnabled) {
         synthFeedback(kind, intensity);
-        if (kind === "fruit") speakMemeLine("touch");
       }
       if (typeof navigator !== "undefined" && "vibrate" in navigator && intensity > 0.58) {
         navigator.vibrate(kind === "fruit" ? 12 : 8);
@@ -256,10 +252,9 @@ export default function Home() {
     setCompleted(true);
     if (soundEnabled) {
       synthFeedback("complete", 1);
-      if (challenge === 1) speakMemeLine("burst");
     }
     if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate([24, 35, 42]);
-  }, [challenge, soundEnabled]);
+  }, [soundEnabled]);
 
   const advance = () => {
     if (transitioning) return;
@@ -290,7 +285,10 @@ export default function Home() {
   const progressValue = progress;
 
   return (
-    <main className={`experience challenge-${challenge} ${transitioning ? "is-transitioning" : ""}`}>
+    <main
+      className={`experience challenge-${challenge} ${transitioning ? "is-transitioning" : ""}`}
+      onPointerDownCapture={continueRealVoice}
+    >
       <div className="ambient-orb ambient-orb-a" />
       <div className="ambient-orb ambient-orb-b" />
       <div className="grain" />
@@ -308,7 +306,8 @@ export default function Home() {
           className="sound-toggle"
           aria-pressed={soundEnabled}
           onClick={() => setSoundEnabled((current) => {
-            if (current && typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
+            if (current) realVoiceRef.current?.pause();
+            else void realVoiceRef.current?.play().catch(() => undefined);
             return !current;
           })}
         >
@@ -364,7 +363,7 @@ export default function Home() {
           </span>
           <div>
             <p>{content.instruction}</p>
-            <span>{challenge === 1 ? "TOUCH = ABI · FULL GRIP = ABI ABI ABI" : challenge === 2 ? "ELMIN GRIP · PERMANENT REBAR BEND" : "ELMIN LIFTS · SUSPENSION FOLLOWS"}</span>
+            <span>{challenge === 1 ? "REAL VIDEO AUDIO · WATERMELON OPENS, NOT EXPLODES" : challenge === 2 ? "BEND · WRAP THE REBAR AROUND HIS ARM" : "ELMIN LIFTS · SUSPENSION FOLLOWS"}</span>
           </div>
         </div>
 
@@ -385,7 +384,7 @@ export default function Home() {
               <i aria-hidden="true">↗</i>
             </button>
           ) : (
-            <span className="completion-target">TARGET · {challenge === 1 ? "100% CRUSH" : challenge === 2 ? "88% BEND" : "90% LIFT"}</span>
+            <span className="completion-target">TARGET · {challenge === 1 ? "100% OPEN" : challenge === 2 ? "88% WRAP" : "90% LIFT"}</span>
           )}
         </div>
       </footer>
