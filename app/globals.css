@@ -54,7 +54,8 @@ button {
     radial-gradient(circle at 52% 47%, #fafaf5 0, #efefe9 41%, #dfdfd7 100%);
 }
 
-.experience.challenge-1 {
+.experience.challenge-1,
+.experience.challenge-4 {
   --paper: #e7ded2;
   --paper-bright: #f8f1e7;
   background:

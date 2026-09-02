@@ -2,8 +2,8 @@
 
 import { ContactShadows, RoundedBox, Sparkles } from "@react-three/drei";
 import { Canvas, ThreeEvent, useFrame, useThree } from "@react-three/fiber";
+import { Bloom, EffectComposer, SMAA, Vignette } from "@react-three/postprocessing";
 import {
-  MutableRefObject,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -12,9 +12,11 @@ import {
   useState,
 } from "react";
 import * as THREE from "three";
+import { punchCamera, cameraKick } from "./fx/cameraKick";
+import { ImpactBurst, type ImpactBurstSpec } from "./fx/ImpactBurst";
 
-export type ChallengeNumber = 1 | 2 | 3;
-export type FeedbackKind = "fruit" | "metal" | "car";
+export type ChallengeNumber = 1 | 2 | 3 | 4;
+export type FeedbackKind = "fruit" | "metal" | "car" | "car-strain";
 
 type ChallengeCanvasProps = {
   challenge: ChallengeNumber;
@@ -30,17 +32,17 @@ type Damage = {
   point: [number, number, number];
   normal: [number, number, number];
   radius: number;
-  angle: number;
+  hits: number;
+  pierced: boolean;
+  broken: boolean;
 };
 
-type Burst = {
-  id: number;
-  origin: [number, number, number];
-  normal: [number, number, number];
-  power: number;
-};
-
-const MAX_DAMAGE = 8;
+const MAX_DAMAGE = 16;
+const UNLOCK_HITS = 5;
+const PIERCE_HITS = 3;
+const SPLIT_MIN_HOLES = 6;
+const SPLIT_BAND = 0.3;
+const SPLIT_SPAN = 1;
 const UP = new THREE.Vector3(0, 1, 0);
 const FORWARD = new THREE.Vector3(0, 0, 1);
 
@@ -166,7 +168,117 @@ function createFleshTexture() {
   return texture;
 }
 
-function WatermelonShellMaterial({ damages }: { damages: Damage[] }) {
+function applyDamageDiscard(material: THREE.MeshPhysicalMaterial, key: string) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.damagePoints = {
+      value: Array.from({ length: MAX_DAMAGE }, () => new THREE.Vector3(99, 99, 99)),
+    };
+    shader.uniforms.damageNormals = {
+      value: Array.from({ length: MAX_DAMAGE }, () => new THREE.Vector3(0, 1, 0)),
+    };
+    shader.uniforms.damageRadii = { value: Array.from({ length: MAX_DAMAGE }, () => 0) };
+    shader.uniforms.damageFlags = { value: Array.from({ length: MAX_DAMAGE }, () => 0) };
+    shader.uniforms.clipNormal = { value: new THREE.Vector3(0, 1, 0) };
+    shader.uniforms.clipEnabled = { value: 0 };
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vLocalPosition;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvLocalPosition = position;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+        varying vec3 vLocalPosition;
+        uniform vec3 damagePoints[16];
+        uniform vec3 damageNormals[16];
+        uniform float damageRadii[16];
+        uniform float damageFlags[16];
+        uniform vec3 clipNormal;
+        uniform float clipEnabled;`,
+      )
+      .replace(
+        "#include <clipping_planes_fragment>",
+        `#include <clipping_planes_fragment>
+        if (clipEnabled > 0.5 && dot(vLocalPosition, clipNormal) > 0.02) discard;
+        for (int i = 0; i < 16; i++) {
+          if (damageRadii[i] <= 0.0) continue;
+          if (distance(vLocalPosition, damagePoints[i]) < damageRadii[i]) discard;
+          if (damageFlags[i] > 0.5) {
+            float radial = length(cross(vLocalPosition, damageNormals[i]));
+            if (radial < damageRadii[i] * 0.92) discard;
+          }
+        }`,
+      );
+    material.userData.shader = shader;
+    const pending = material.userData.pendingDamages as Damage[] | undefined;
+    if (pending) {
+      writeDamageUniforms(
+        shader,
+        pending,
+        material.userData.radiusScale ?? 1,
+        material.userData.pointScale ?? 1,
+        material.userData.clipNormal ?? null,
+      );
+    }
+  };
+  material.customProgramCacheKey = () => `${key}-clip`;
+}
+
+function writeDamageUniforms(
+  shader: { uniforms: Record<string, { value: unknown }> },
+  damages: Damage[],
+  radiusScale: number,
+  pointScale: number,
+  clipNormal: [number, number, number] | null,
+) {
+  const points = shader.uniforms.damagePoints.value as THREE.Vector3[];
+  const normals = shader.uniforms.damageNormals.value as THREE.Vector3[];
+  const radii = shader.uniforms.damageRadii.value as number[];
+  const flags = shader.uniforms.damageFlags.value as number[];
+  for (let i = 0; i < MAX_DAMAGE; i += 1) {
+    const damage = damages[i];
+    if (damage) {
+      points[i].set(damage.point[0] * pointScale, damage.point[1] * pointScale, damage.point[2] * pointScale);
+      normals[i].set(damage.normal[0], damage.normal[1], damage.normal[2]).normalize();
+      radii[i] = damage.radius * radiusScale;
+      flags[i] = damage.pierced ? 1 : 0;
+    } else {
+      points[i].set(99, 99, 99);
+      normals[i].set(0, 1, 0);
+      radii[i] = 0;
+      flags[i] = 0;
+    }
+  }
+  if (shader.uniforms.clipEnabled) {
+    shader.uniforms.clipEnabled.value = clipNormal ? 1 : 0;
+    if (clipNormal) {
+      (shader.uniforms.clipNormal.value as THREE.Vector3).set(clipNormal[0], clipNormal[1], clipNormal[2]).normalize();
+    }
+  }
+}
+
+function syncDamageUniforms(
+  material: THREE.MeshPhysicalMaterial,
+  damages: Damage[],
+  radiusScale: number,
+  pointScale = 1,
+  clipNormal: [number, number, number] | null = null,
+) {
+  material.userData.pendingDamages = damages;
+  material.userData.radiusScale = radiusScale;
+  material.userData.pointScale = pointScale;
+  material.userData.clipNormal = clipNormal;
+  const shader = material.userData.shader as { uniforms: Record<string, { value: unknown }> } | undefined;
+  if (!shader) return;
+  writeDamageUniforms(shader, damages, radiusScale, pointScale, clipNormal);
+}
+
+function WatermelonShellMaterial({
+  damages,
+  clipNormal,
+}: {
+  damages: Damage[];
+  clipNormal: [number, number, number] | null;
+}) {
   const textures = useMemo(createWatermelonTextures, []);
   const material = useMemo(() => {
     const next = new THREE.MeshPhysicalMaterial({
@@ -180,48 +292,17 @@ function WatermelonShellMaterial({ damages }: { damages: Damage[] }) {
       sheen: 0.2,
       sheenColor: new THREE.Color("#89ba62"),
     });
-    next.onBeforeCompile = (shader) => {
-      shader.uniforms.damagePoints = {
-        value: Array.from({ length: MAX_DAMAGE }, () => new THREE.Vector3(99, 99, 99)),
-      };
-      shader.uniforms.damageRadii = { value: Array.from({ length: MAX_DAMAGE }, () => 0) };
-      shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", "#include <common>\nvarying vec3 vLocalPosition;")
-        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvLocalPosition = position;");
-      shader.fragmentShader = shader.fragmentShader
-        .replace(
-          "#include <common>",
-          "#include <common>\nvarying vec3 vLocalPosition;\nuniform vec3 damagePoints[8];\nuniform float damageRadii[8];",
-        )
-        .replace(
-          "#include <clipping_planes_fragment>",
-          `#include <clipping_planes_fragment>
-          for (int i = 0; i < 8; i++) {
-            if (damageRadii[i] > 0.0 && distance(vLocalPosition, damagePoints[i]) < damageRadii[i]) discard;
-          }`,
-        );
-      next.userData.shader = shader;
-    };
-    next.customProgramCacheKey = () => "watermelon-damage-v2";
+    applyDamageDiscard(next, "watermelon-damage-v7-shell");
     return next;
   }, [textures]);
 
   useLayoutEffect(() => {
-    const shader = material.userData.shader;
-    if (!shader) return;
-    const points = shader.uniforms.damagePoints.value as THREE.Vector3[];
-    const radii = shader.uniforms.damageRadii.value as number[];
-    for (let i = 0; i < MAX_DAMAGE; i += 1) {
-      const damage = damages[i];
-      if (damage) {
-        points[i].set(...damage.point);
-        radii[i] = damage.radius;
-      } else {
-        points[i].set(99, 99, 99);
-        radii[i] = 0;
-      }
-    }
-  }, [damages, material]);
+    syncDamageUniforms(material, damages, 1, 1, clipNormal);
+  }, [clipNormal, damages, material]);
+
+  useFrame(() => {
+    syncDamageUniforms(material, damages, 1, 1, clipNormal);
+  });
 
   useEffect(
     () => () => {
@@ -238,110 +319,240 @@ function WatermelonShellMaterial({ damages }: { damages: Damage[] }) {
 function DamageMark({ damage }: { damage: Damage }) {
   const normal = useMemo(() => new THREE.Vector3(...damage.normal).normalize(), [damage.normal]);
   const quaternion = useMemo(() => new THREE.Quaternion().setFromUnitVectors(FORWARD, normal), [normal]);
-  const crackCount = damage.radius > 0.13 ? 7 : 5;
+  const radius = damage.radius;
+  const depth = damage.pierced ? 1.35 : 0.16 + damage.hits * 0.1;
 
   return (
-    <group position={damage.point} quaternion={quaternion} rotation-z={damage.angle}>
-      {Array.from({ length: crackCount }, (_, index) => {
-        const angle = (index / crackCount) * Math.PI * 2 + damage.angle;
-        const length = 0.11 + ((index * 37 + damage.id) % 5) * 0.022 + damage.radius * 0.35;
-        return (
-          <mesh
-            key={index}
-            position={[Math.cos(angle) * (damage.radius * 0.62 + length * 0.22), Math.sin(angle) * (damage.radius * 0.62 + length * 0.22), 0.008]}
-            rotation-z={angle}
-            renderOrder={3}
-          >
-            <planeGeometry args={[length, 0.008 + (index % 2) * 0.005]} />
-            <meshBasicMaterial color="#142319" transparent opacity={0.92} depthWrite={false} />
-          </mesh>
-        );
-      })}
-      {damage.radius > 0.025 && (
-        <>
-          <mesh position={[0, 0, 0.014]} renderOrder={4}>
-            <torusGeometry args={[damage.radius * 0.93, 0.014, 10, 36]} />
-            <meshStandardMaterial color="#b8d79a" roughness={0.72} />
-          </mesh>
-          <mesh position={[0, 0, 0.022]} renderOrder={5}>
-            <torusGeometry args={[damage.radius * 0.7, 0.013, 8, 28]} />
-            <meshStandardMaterial color="#681624" roughness={0.62} />
-          </mesh>
-        </>
+    <group position={damage.point} quaternion={quaternion} raycast={() => null}>
+      <mesh position={[0, 0, 0.012]} rotation={[Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[radius * 0.98, 28]} />
+        <meshStandardMaterial
+          color="#d4454f"
+          roughness={0.58}
+          polygonOffset
+          polygonOffsetFactor={-4}
+          polygonOffsetUnits={-4}
+        />
+      </mesh>
+      <mesh position={[0, 0, damage.pierced ? -0.55 : -depth * 0.5]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry
+          args={[
+            radius * (damage.pierced ? 0.82 : 0.88),
+            radius * (damage.pierced ? 0.82 : 0.5),
+            depth,
+            24,
+            1,
+            true,
+          ]}
+        />
+        <meshPhysicalMaterial color="#d4454f" roughness={0.58} side={THREE.DoubleSide} />
+      </mesh>
+      {!damage.pierced && (
+        <mesh position={[0, 0, -depth]}>
+          <sphereGeometry args={[radius * 0.52, 16, 12]} />
+          <meshStandardMaterial color="#9a2430" roughness={0.72} />
+        </mesh>
       )}
     </group>
   );
 }
 
-function FruitBurst({ burst, reducedMotion }: { burst: Burst; reducedMotion: boolean }) {
-  const group = useRef<THREE.Group>(null);
-  const meshes = useRef<(THREE.Mesh | null)[]>([]);
-  const startTime = useRef<number | null>(null);
-  const visible = useRef(true);
-  const pieces = useMemo(() => {
-    const random = seededRandom(burst.id * 991 + 17);
-    const normal = new THREE.Vector3(...burst.normal).normalize();
+function detectCutNormal(damages: Damage[]): THREE.Vector3 | null {
+  if (damages.length < SPLIT_MIN_HOLES) return null;
+  const points = damages.map((damage) => new THREE.Vector3(...damage.point).normalize());
+  const mean = points.reduce((acc, point) => acc.add(point), new THREE.Vector3());
+  if (mean.lengthSq() > 0.0001) mean.normalize();
+  const candidates = [new THREE.Vector3(0, 1, 0), new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1)];
+  if (mean.lengthSq() > 0.2) {
+    const across = new THREE.Vector3().crossVectors(mean, UP);
+    if (across.lengthSq() > 0.05) {
+      across.normalize();
+      candidates.push(across, new THREE.Vector3().crossVectors(across, mean).normalize());
+    }
+  }
+
+  let best: THREE.Vector3 | null = null;
+  let bestScore = 0;
+  for (const candidate of candidates) {
+    if (candidate.lengthSq() < 0.4) continue;
+    const normal = candidate.normalize();
+    const band = points.filter((point) => Math.abs(point.dot(normal)) < SPLIT_BAND);
+    if (band.length < SPLIT_MIN_HOLES) continue;
     const tangent = new THREE.Vector3(1, 0, 0);
-    if (Math.abs(normal.dot(tangent)) > 0.8) tangent.set(0, 1, 0);
+    if (Math.abs(normal.dot(tangent)) > 0.86) tangent.set(0, 0, 1);
     tangent.cross(normal).normalize();
     const bitangent = new THREE.Vector3().crossVectors(normal, tangent).normalize();
-    const count = reducedMotion ? 4 : 8;
-    return Array.from({ length: count }, (_, index) => {
-      const spreadA = (random() - 0.5) * 1.9;
-      const spreadB = (random() - 0.5) * 1.9;
-      const velocity = normal
-        .clone()
-        .multiplyScalar(0.7 + random() * 1.45)
-        .addScaledVector(tangent, spreadA)
-        .addScaledVector(bitangent, spreadB)
-        .multiplyScalar(burst.power);
-      const scale = 0.028 + random() * 0.055;
-      return {
-        velocity,
-        angular: new THREE.Vector3(random() * 7, random() * 7, random() * 7),
-        scale,
-        color: index % 4 === 0 ? "#4d8b38" : index % 5 === 0 ? "#b5d693" : "#cb3044",
-      };
-    });
-  }, [burst, reducedMotion]);
+    let minT = Infinity;
+    let maxT = -Infinity;
+    let minB = Infinity;
+    let maxB = -Infinity;
+    for (const point of band) {
+      const t = point.dot(tangent);
+      const b = point.dot(bitangent);
+      minT = Math.min(minT, t);
+      maxT = Math.max(maxT, t);
+      minB = Math.min(minB, b);
+      maxB = Math.max(maxB, b);
+    }
+    const span = Math.max(maxT - minT, maxB - minB);
+    if (span < SPLIT_SPAN) continue;
+    const score = band.length * span;
+    if (score > bestScore) {
+      bestScore = score;
+      best = normal.clone();
+    }
+  }
+  return best;
+}
 
-  useFrame((state) => {
-    if (!visible.current) return;
-    if (startTime.current === null) startTime.current = state.clock.elapsedTime;
-    const age = state.clock.elapsedTime - startTime.current;
-    pieces.forEach((piece, index) => {
-      const mesh = meshes.current[index];
-      if (!mesh) return;
-      mesh.position.copy(piece.velocity).multiplyScalar(age);
-      mesh.position.y -= age * age * 1.65;
-      mesh.rotation.x = piece.angular.x * age;
-      mesh.rotation.y = piece.angular.y * age;
-      mesh.rotation.z = piece.angular.z * age;
-      const fade = clamp(1 - age / 1.25);
-      mesh.scale.setScalar(piece.scale * Math.max(0.001, fade));
-    });
-    if (age > 1.35 && group.current) {
-      visible.current = false;
-      group.current.visible = false;
+function orientFallNormal(cut: THREE.Vector3) {
+  const normal = cut.clone().normalize();
+  if (normal.y < 0) normal.negate();
+  if (Math.abs(normal.y) < 0.22 && normal.z < 0) normal.negate();
+  return normal;
+}
+
+function isOnStaySide(point: [number, number, number], fallNormal: [number, number, number], pad = 0.08) {
+  return point[0] * fallNormal[0] + point[1] * fallNormal[1] + point[2] * fallNormal[2] <= pad;
+}
+
+function FallingWatermelonHalf({
+  cutNormal,
+  fleshTexture,
+  reducedMotion,
+}: {
+  cutNormal: [number, number, number];
+  fleshTexture: THREE.CanvasTexture;
+  reducedMotion: boolean;
+}) {
+  const textures = useMemo(createWatermelonTextures, []);
+  const group = useRef<THREE.Group>(null);
+  const born = useRef<number | null>(null);
+  const [gone, setGone] = useState(false);
+  const normal = useMemo(() => new THREE.Vector3(...cutNormal).normalize(), [cutNormal]);
+  const align = useMemo(() => new THREE.Quaternion().setFromUnitVectors(UP, normal), [normal]);
+  const velocity = useRef(
+    new THREE.Vector3()
+      .copy(normal)
+      .multiplyScalar(1.15)
+      .add(new THREE.Vector3(0.18, reducedMotion ? 0.12 : 1.85, 0.55)),
+  );
+  const spin = useRef(new THREE.Vector3(1.55, 0.35, -1.05));
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setGone(true), 5000);
+    return () => window.clearTimeout(timeout);
+  }, []);
+
+  useEffect(
+    () => () => {
+      textures.map.dispose();
+      textures.bumpMap.dispose();
+    },
+    [textures],
+  );
+
+  useFrame((state, delta) => {
+    if (!group.current) return;
+    if (born.current === null) born.current = state.clock.elapsedTime;
+    const age = state.clock.elapsedTime - born.current;
+    const fade = age > 4.4 ? Math.max(0, 1 - (age - 4.4) / 0.6) : 1;
+    group.current.scale.setScalar(Math.max(0.001, fade));
+    if (reducedMotion) {
+      group.current.position.addScaledVector(normal, delta * 0.45);
+      group.current.position.y = Math.max(-0.72, group.current.position.y - delta * 0.85);
+      return;
+    }
+    velocity.current.y -= 11.8 * delta;
+    group.current.position.addScaledVector(velocity.current, delta);
+    group.current.rotation.x += spin.current.x * delta;
+    group.current.rotation.y += spin.current.y * delta;
+    group.current.rotation.z += spin.current.z * delta;
+    if (group.current.position.y < -0.72) {
+      group.current.position.y = -0.72;
+      velocity.current.x *= 0.52;
+      velocity.current.z *= 0.52;
+      velocity.current.y = Math.abs(velocity.current.y) < 0.45 ? 0 : velocity.current.y * -0.16;
+      spin.current.multiplyScalar(0.62);
     }
   });
 
+  if (gone) return null;
+
   return (
-    <group ref={group} position={burst.origin}>
-      {pieces.map((piece, index) => (
-        <mesh
-          key={index}
-          ref={(node) => {
-            meshes.current[index] = node;
-          }}
-          castShadow
-        >
-          <dodecahedronGeometry args={[1, 0]} />
-          <meshStandardMaterial color={piece.color} roughness={0.62} />
-        </mesh>
-      ))}
+    <group ref={group} position={[normal.x * 0.04, 0.16, 0.34 + normal.z * 0.08]} raycast={() => null}>
+      <group quaternion={align}>
+        <group>
+          <mesh scale={[0.86, 0.9, 0.83]} castShadow>
+            <sphereGeometry args={[1, 64, 40, 0, Math.PI * 2, 0, Math.PI / 2]} />
+            <meshPhysicalMaterial
+              map={textures.map}
+              bumpMap={textures.bumpMap}
+              bumpScale={0.035}
+              roughness={0.38}
+              clearcoat={0.34}
+              sheen={0.2}
+              sheenColor="#89ba62"
+            />
+          </mesh>
+          <mesh scale={[0.78, 0.82, 0.75]} castShadow>
+            <sphereGeometry args={[1, 48, 28, 0, Math.PI * 2, 0, Math.PI / 2]} />
+            <meshPhysicalMaterial map={fleshTexture} color="#e04752" roughness={0.56} />
+          </mesh>
+          <mesh rotation={[Math.PI / 2, 0, 0]} scale={[0.86, 0.83, 1]}>
+            <circleGeometry args={[0.91, 48]} />
+            <meshPhysicalMaterial map={fleshTexture} color="#d4454f" roughness={0.5} side={THREE.DoubleSide} />
+          </mesh>
+          {normal.y > 0.4 && (
+            <mesh position={[0, 0.93, 0]} rotation={[0.08, 0, -0.22]} castShadow>
+              <cylinderGeometry args={[0.045, 0.075, 0.23, 12]} />
+              <meshStandardMaterial color="#51472a" roughness={0.9} />
+            </mesh>
+          )}
+        </group>
+      </group>
     </group>
   );
+}
+
+function WatermelonFleshMaterial({
+  damages,
+  map,
+  clipNormal,
+}: {
+  damages: Damage[];
+  map: THREE.CanvasTexture;
+  clipNormal: [number, number, number] | null;
+}) {
+  const material = useMemo(() => {
+    const next = new THREE.MeshPhysicalMaterial({
+      map,
+      color: "#e04752",
+      roughness: 0.56,
+      clearcoat: 0.08,
+      bumpMap: map,
+      bumpScale: 0.008,
+    });
+    applyDamageDiscard(next, "watermelon-damage-v7-flesh");
+    return next;
+  }, [map]);
+
+  useLayoutEffect(() => {
+    const pierced = damages.map((damage) =>
+      damage.pierced ? damage : { ...damage, radius: 0 },
+    );
+    syncDamageUniforms(material, pierced, 0.9, 0.91, clipNormal);
+  }, [clipNormal, damages, material]);
+
+  useFrame(() => {
+    const pierced = damages.map((damage) =>
+      damage.pierced ? damage : { ...damage, radius: 0 },
+    );
+    syncDamageUniforms(material, pierced, 0.9, 0.91, clipNormal);
+  });
+
+  useEffect(() => () => material.dispose(), [material]);
+  return <primitive object={material} attach="material" />;
 }
 
 function createCourtyardTexture() {
@@ -391,7 +602,7 @@ function CourtyardSet() {
     <group>
       <mesh position={[0, 0.45, -1.68]} receiveShadow>
         <planeGeometry args={[7.2, 4.1]} />
-        <meshStandardMaterial map={wallTexture} roughness={0.96} color="#d19a72" transparent opacity={0.86} />
+        <meshStandardMaterial map={wallTexture} roughness={0.96} color="#d19a72" />
       </mesh>
       <mesh position={[-2.15, 0.73, -1.645]}>
         <planeGeometry args={[1.22, 1.3]} />
@@ -409,16 +620,16 @@ function CourtyardSet() {
           <meshStandardMaterial color="#36342e" metalness={0.62} roughness={0.55} />
         </mesh>
       ))}
-      <mesh position={[0, -1.18, -0.12]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+      <mesh position={[0, -1.195, -0.12]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[8.2, 7]} />
-        <meshStandardMaterial color="#7b6b59" roughness={0.98} />
+        <meshStandardMaterial color="#6f6254" roughness={1} polygonOffset polygonOffsetFactor={1} polygonOffsetUnits={1} />
       </mesh>
-      <mesh position={[0, -1.165, 0.18]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+      <mesh position={[0, -1.186, 0.18]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[3.25, 2.65]} />
-        <meshStandardMaterial color="#7b2e2a" roughness={0.92} />
+        <meshStandardMaterial color="#7b2e2a" roughness={0.96} />
       </mesh>
       {[0.42, 0.72, 1.05].map((radius, index) => (
-        <mesh key={radius} position={[0, -1.15 + index * 0.001, 0.18]} rotation={[-Math.PI / 2, 0, 0]}>
+        <mesh key={radius} position={[0, -1.178, 0.18]} rotation={[-Math.PI / 2, 0, 0]}>
           <torusGeometry args={[radius, 0.025, 8, 52]} />
           <meshStandardMaterial color={index % 2 ? "#d5b179" : "#392824"} roughness={0.9} />
         </mesh>
@@ -444,14 +655,16 @@ function StrongmanCharacter({
   position = [0, -0.02, -0.58],
   scale = 1,
   rotationY = 0,
+  strike = 0,
 }: {
   pressure: number;
   burst: boolean;
   reducedMotion: boolean;
-  mode?: "crush" | "bend" | "lift";
+  mode?: "crush" | "bend" | "lift" | "hammer";
   position?: [number, number, number];
   scale?: number;
   rotationY?: number;
+  strike?: number;
 }) {
   const root = useRef<THREE.Group>(null);
   const torso = useRef<THREE.Group>(null);
@@ -462,6 +675,8 @@ function StrongmanCharacter({
   const rightFore = useRef<THREE.Group>(null);
   const motion = useRef(0);
   const burstStarted = useRef<number | null>(null);
+  const slam = useRef(0);
+  const lastStrike = useRef(0);
 
   useFrame((state, delta) => {
     motion.current = THREE.MathUtils.damp(motion.current, pressure, 8.5, delta);
@@ -469,27 +684,47 @@ function StrongmanCharacter({
     if (burst && burstStarted.current === null) burstStarted.current = state.clock.elapsedTime;
     const burstAge = burstStarted.current === null ? 0 : state.clock.elapsedTime - burstStarted.current;
     const recoil = burst && !reducedMotion ? Math.sin(burstAge * 21) * Math.exp(-burstAge * 5.5) * 0.045 : 0;
+    if (strike > lastStrike.current) {
+      lastStrike.current = strike;
+      slam.current = 1;
+    }
+    slam.current = THREE.MathUtils.damp(slam.current, 0, 9, delta);
     const breath = reducedMotion ? 0 : Math.sin(state.clock.elapsedTime * 1.65) * 0.012;
     if (root.current) {
-      root.current.position.y = breath * 0.35 + recoil;
-      const lean = mode === "crush" ? -0.025 - squeeze * 0.11 : mode === "bend" ? -0.04 - squeeze * 0.16 : -0.08 - squeeze * 0.2;
+      root.current.position.y = breath * 0.35 + recoil - slam.current * 0.04;
+      const lean = mode === "crush"
+        ? -0.025 - squeeze * 0.11
+        : mode === "bend"
+          ? -0.04 - squeeze * 0.16
+          : mode === "hammer"
+            ? -0.12 - squeeze * 0.14 - slam.current * 0.18
+            : -0.08 - squeeze * 0.2;
       root.current.rotation.x = THREE.MathUtils.damp(root.current.rotation.x, lean, 6, delta);
     }
     if (torso.current) torso.current.scale.set(1 + squeeze * 0.025, 1 + breath, 1 + squeeze * 0.055);
     if (head.current) {
-      head.current.rotation.x = THREE.MathUtils.damp(head.current.rotation.x, 0.02 + squeeze * 0.13, 7, delta);
+      head.current.rotation.x = THREE.MathUtils.damp(head.current.rotation.x, 0.02 + squeeze * 0.13 + slam.current * 0.12, 7, delta);
       head.current.rotation.z = reducedMotion ? 0 : Math.sin(state.clock.elapsedTime * 0.65) * 0.012;
     }
     if (leftUpper.current && rightUpper.current && leftFore.current && rightFore.current) {
-      const upperZ = mode === "crush" ? -0.28 + squeeze * 0.16 : mode === "bend" ? -0.38 + squeeze * 0.26 : -0.52 + squeeze * 0.2;
-      const foreZ = mode === "crush" ? 0.74 + squeeze * 0.3 : mode === "bend" ? 0.54 + squeeze * 0.56 : 0.28 + squeeze * 0.25;
-      const armX = mode === "crush" ? -0.72 : mode === "bend" ? -0.58 - squeeze * 0.12 : -0.34 - squeeze * 0.22;
-      leftUpper.current.rotation.z = THREE.MathUtils.damp(leftUpper.current.rotation.z, upperZ, 8, delta);
-      rightUpper.current.rotation.z = THREE.MathUtils.damp(rightUpper.current.rotation.z, -upperZ, 8, delta);
-      leftFore.current.rotation.z = THREE.MathUtils.damp(leftFore.current.rotation.z, foreZ, 9, delta);
-      rightFore.current.rotation.z = THREE.MathUtils.damp(rightFore.current.rotation.z, -foreZ, 9, delta);
-      leftUpper.current.rotation.x = THREE.MathUtils.damp(leftUpper.current.rotation.x, armX, 8, delta);
-      rightUpper.current.rotation.x = THREE.MathUtils.damp(rightUpper.current.rotation.x, armX, 8, delta);
+      if (mode === "hammer") {
+        leftUpper.current.rotation.z = THREE.MathUtils.damp(leftUpper.current.rotation.z, -0.12 + squeeze * 0.08, 8, delta);
+        rightUpper.current.rotation.z = THREE.MathUtils.damp(rightUpper.current.rotation.z, 0.78 - slam.current * 0.92, 14, delta);
+        leftFore.current.rotation.z = THREE.MathUtils.damp(leftFore.current.rotation.z, 0.98, 8, delta);
+        rightFore.current.rotation.z = THREE.MathUtils.damp(rightFore.current.rotation.z, -0.22 - slam.current * 0.55, 14, delta);
+        leftUpper.current.rotation.x = THREE.MathUtils.damp(leftUpper.current.rotation.x, -0.88, 8, delta);
+        rightUpper.current.rotation.x = THREE.MathUtils.damp(rightUpper.current.rotation.x, -1.12 + slam.current * 0.42, 14, delta);
+      } else {
+        const upperZ = mode === "crush" ? -0.28 + squeeze * 0.16 : mode === "bend" ? -0.38 + squeeze * 0.26 : -0.52 + squeeze * 0.2;
+        const foreZ = mode === "crush" ? 0.74 + squeeze * 0.3 : mode === "bend" ? 0.54 + squeeze * 0.56 : 0.28 + squeeze * 0.25;
+        const armX = mode === "crush" ? -0.72 : mode === "bend" ? -0.58 - squeeze * 0.12 : -0.34 - squeeze * 0.22;
+        leftUpper.current.rotation.z = THREE.MathUtils.damp(leftUpper.current.rotation.z, upperZ, 8, delta);
+        rightUpper.current.rotation.z = THREE.MathUtils.damp(rightUpper.current.rotation.z, -upperZ, 8, delta);
+        leftFore.current.rotation.z = THREE.MathUtils.damp(leftFore.current.rotation.z, foreZ, 9, delta);
+        rightFore.current.rotation.z = THREE.MathUtils.damp(rightFore.current.rotation.z, -foreZ, 9, delta);
+        leftUpper.current.rotation.x = THREE.MathUtils.damp(leftUpper.current.rotation.x, armX, 8, delta);
+        rightUpper.current.rotation.x = THREE.MathUtils.damp(rightUpper.current.rotation.x, armX, 8, delta);
+      }
     }
   });
 
@@ -665,63 +900,6 @@ function WatermelonStand() {
   );
 }
 
-function WatermelonSplit({ active, reducedMotion }: { active: boolean; reducedMotion: boolean }) {
-  const left = useRef<THREE.Group>(null);
-  const right = useRef<THREE.Group>(null);
-
-  useFrame((_, delta) => {
-    if (!active) return;
-    const blend = reducedMotion ? 1 : 1 - Math.exp(-delta * 4.6);
-    if (left.current) {
-      left.current.position.lerp(new THREE.Vector3(-0.42, -0.04, 0.03), blend);
-      left.current.rotation.z = THREE.MathUtils.damp(left.current.rotation.z, 0.12, 5, delta);
-      left.current.rotation.y = THREE.MathUtils.damp(left.current.rotation.y, -0.16, 5, delta);
-    }
-    if (right.current) {
-      right.current.position.lerp(new THREE.Vector3(0.42, -0.04, 0.03), blend);
-      right.current.rotation.z = THREE.MathUtils.damp(right.current.rotation.z, -0.12, 5, delta);
-      right.current.rotation.y = THREE.MathUtils.damp(right.current.rotation.y, 0.16, 5, delta);
-    }
-  });
-
-  if (!active) return null;
-  return (
-    <group position={[0, -0.02, 0.34]}>
-      {([-1, 1] as const).map((side) => (
-        <group key={side} ref={side < 0 ? left : right}>
-          <mesh scale={[0.5, 0.86, 0.7]} castShadow>
-            <sphereGeometry args={[0.92, 42, 32]} />
-            <meshPhysicalMaterial color="#28672f" roughness={0.44} clearcoat={0.18} />
-          </mesh>
-          <mesh position={[side * -0.035, 0, 0.045]} scale={[0.445, 0.79, 0.655]} castShadow>
-            <sphereGeometry args={[0.92, 40, 30]} />
-            <meshStandardMaterial color="#bfd89d" roughness={0.68} />
-          </mesh>
-          <mesh position={[side * -0.06, 0, 0.095]} scale={[0.39, 0.72, 0.61]} castShadow>
-            <sphereGeometry args={[0.92, 40, 30]} />
-            <meshPhysicalMaterial color="#db3d4e" roughness={0.58} clearcoat={0.08} />
-          </mesh>
-          {Array.from({ length: 9 }, (_, index) => {
-            const column = index % 3;
-            const row = Math.floor(index / 3);
-            return (
-              <mesh
-                key={index}
-                position={[side * (-0.405 + column * 0.018), -0.28 + row * 0.28, 0.66 - Math.abs(column - 1) * 0.05]}
-                rotation={[0, side * 0.08, (index % 2 ? 1 : -1) * 0.3]}
-                scale={[0.026, 0.062, 0.018]}
-              >
-                <sphereGeometry args={[1, 12, 8]} />
-                <meshStandardMaterial color="#231013" roughness={0.72} />
-              </mesh>
-            );
-          })}
-        </group>
-      ))}
-    </group>
-  );
-}
-
 function WatermelonChallenge({
   reducedMotion,
   onProgress,
@@ -731,18 +909,23 @@ function WatermelonChallenge({
 }: Omit<ChallengeCanvasProps, "challenge">) {
   const shell = useRef<THREE.Mesh>(null);
   const fruitRig = useRef<THREE.Group>(null);
-  const pressureRef = useRef(0);
-  const holding = useRef(false);
-  const burstRef = useRef(false);
+  const stage = useRef<THREE.Group>(null);
+  const squash = useRef(0);
+  const hitsRef = useRef(0);
+  const damagesRef = useRef<Damage[]>([]);
+  const splitRef = useRef(false);
   const completionSent = useRef(false);
-  const lastPublished = useRef(0);
-  const lastDamageStage = useRef(0);
+  const lastHitAt = useRef(0);
   const [hovered, setHovered] = useState(false);
-  const [pressure, setPressure] = useState(0);
-  const [burst, setBurst] = useState(false);
+  const [hits, setHits] = useState(0);
   const [damages, setDamages] = useState<Damage[]>([]);
-  const [bursts, setBursts] = useState<Burst[]>([]);
+  const [splitNormal, setSplitNormal] = useState<[number, number, number] | null>(null);
+  const [bursts, setBursts] = useState<ImpactBurstSpec[]>([]);
   const fleshTexture = useMemo(createFleshTexture, []);
+  const cutFacing = useMemo(
+    () => (splitNormal ? new THREE.Quaternion().setFromUnitVectors(FORWARD, new THREE.Vector3(...splitNormal)) : null),
+    [splitNormal],
+  );
 
   useEffect(() => () => fleshTexture.dispose(), [fleshTexture]);
   useEffect(() => {
@@ -752,133 +935,209 @@ function WatermelonChallenge({
     };
   }, [hovered]);
 
-  const addPressure = useCallback((amount: number) => {
-    if (burstRef.current) return;
-    const previous = pressureRef.current;
-    const next = clamp(previous + amount);
-    pressureRef.current = next;
-    const stage = Math.min(5, Math.ceil(next * 5));
-    if (stage > lastDamageStage.current) {
-      lastDamageStage.current = stage;
-      const side = stage % 2 === 0 ? -1 : 1;
-      const point = new THREE.Vector3(side * (0.88 - stage * 0.025), 0.15 - stage * 0.07, 0.44).normalize();
-      const id = performance.now() + stage;
-      setDamages((current) => [...current, {
-        id,
-        point: point.toArray() as [number, number, number],
-        normal: point.toArray() as [number, number, number],
-        radius: 0.035 + stage * 0.018,
-        angle: side * (0.3 + stage * 0.24),
-      }]);
-      setBursts((current) => [...current.slice(-2), {
-        id,
-        origin: point.clone().multiplyScalar(1.02).toArray() as [number, number, number],
-        normal: [0, 0.15, 1],
-        power: 0.38 + stage * 0.055,
-      }]);
-      onFeedback("fruit", 0.34 + stage * 0.1);
+  const punchAt = useCallback((event: ThreeEvent<PointerEvent>) => {
+    const worldPoint = event.point.clone();
+    const shellMesh = shell.current;
+    const localPoint = shellMesh
+      ? shellMesh.worldToLocal(worldPoint.clone())
+      : event.object.worldToLocal(worldPoint.clone());
+    if (localPoint.lengthSq() < 0.0001) localPoint.set(0, 0, 1);
+    if (splitRef.current && splitNormal) {
+      const fall = new THREE.Vector3(...splitNormal);
+      if (localPoint.dot(fall) > 0.12) return;
+      if (localPoint.dot(fall) > -0.04) {
+        localPoint.addScaledVector(fall, -0.12 - localPoint.dot(fall));
+      }
+      if (localPoint.lengthSq() < 0.0001) localPoint.copy(fall).multiplyScalar(-1);
     }
-    if (next - lastPublished.current >= 0.018 || next === 1) {
-      lastPublished.current = next;
-      setPressure(next);
-      onProgress(next, stage);
+
+    const now = performance.now();
+    if (now - lastHitAt.current < 55) return;
+    lastHitAt.current = now;
+    onObjectTouch();
+    const localNormal = localPoint.clone().normalize();
+    const worldNormal = event.face
+      ? event.face.normal.clone().transformDirection(event.object.matrixWorld).normalize()
+      : localNormal.clone().transformDirection((shellMesh ?? event.object).matrixWorld).normalize();
+    const originInStage = stage.current
+      ? stage.current.worldToLocal(worldPoint.clone())
+      : worldPoint.clone();
+    const stageInverse = stage.current ? new THREE.Matrix4().copy(stage.current.matrixWorld).invert() : new THREE.Matrix4();
+    const normalInStage = worldNormal.clone().transformDirection(stageInverse).normalize();
+
+    const nextHits = hitsRef.current + 1;
+    hitsRef.current = nextHits;
+    setHits(nextHits);
+    squash.current = 1;
+    punchCamera(0.045 + Math.min(nextHits, 12) * 0.006);
+
+    const id = now + nextHits;
+    const holeRadius = 0.09;
+    const current = damagesRef.current;
+    let nearestIndex = -1;
+    let nearestDist = Infinity;
+    for (let index = 0; index < current.length; index += 1) {
+      const dx = current[index].point[0] - localNormal.x;
+      const dy = current[index].point[1] - localNormal.y;
+      const dz = current[index].point[2] - localNormal.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearestIndex = index;
+      }
     }
-    if (next >= 1 && !completionSent.current) {
+
+    const mergeSameSpot = nearestIndex >= 0 && nearestDist < 0.1;
+    const growOldestInstead = !mergeSameSpot && current.length >= MAX_DAMAGE;
+    const targetIndex = mergeSameSpot || growOldestInstead ? nearestIndex : -1;
+    let nextDamages: Damage[];
+
+    const deepen = (damage: Damage): Damage => {
+      const holeHits = damage.hits + 1;
+      const pierced = holeHits >= PIERCE_HITS;
+      return {
+        ...damage,
+        radius: Math.min(0.16, damage.radius + (pierced ? 0.01 : 0.02)),
+        hits: holeHits,
+        pierced,
+        broken: damage.broken,
+      };
+    };
+
+    if (targetIndex >= 0) {
+      nextDamages = current.map((damage, index) => (index === targetIndex ? deepen(damage) : damage));
+    } else {
+      nextDamages = [
+        ...current,
+        {
+          id,
+          point: localNormal.toArray() as [number, number, number],
+          normal: localNormal.toArray() as [number, number, number],
+          radius: holeRadius,
+          hits: 1,
+          pierced: false,
+          broken: false,
+        },
+      ];
+    }
+
+    const cut = !splitRef.current ? detectCutNormal(nextDamages) : null;
+    if (cut) {
+      const fall = orientFallNormal(cut);
+      splitRef.current = true;
+      setSplitNormal(fall.toArray() as [number, number, number]);
+      damagesRef.current = [];
+      setDamages([]);
+    } else {
+      damagesRef.current = nextDamages;
+      setDamages(nextDamages);
+    }
+
+    setBursts((currentBursts) => [
+      ...currentBursts.slice(-3),
+      {
+        id,
+        origin: originInStage.toArray() as [number, number, number],
+        normal: normalInStage.toArray() as [number, number, number],
+        power: cut ? 0.9 : 0.46 + Math.min(nextHits, 10) * 0.02,
+        kind: "fruit",
+      },
+    ]);
+
+    onProgress(clamp(nextHits / UNLOCK_HITS), nextHits);
+    onFeedback("fruit", cut ? 0.9 : 0.42 + Math.min(nextHits, 10) * 0.055);
+
+    if (nextHits >= UNLOCK_HITS && !completionSent.current) {
       completionSent.current = true;
-      burstRef.current = true;
-      holding.current = false;
-      setPressure(1);
-      setBurst(true);
-      onProgress(1, 5);
-      onFeedback("fruit", 1);
       onComplete();
     }
-  }, [onComplete, onFeedback, onProgress]);
+  }, [onComplete, onFeedback, onObjectTouch, onProgress, splitNormal]);
 
-  useFrame((state, delta) => {
-    if (holding.current && !burstRef.current) addPressure(delta * 0.46);
+  useFrame((_, delta) => {
     if (!fruitRig.current) return;
-    const squeeze = smoothstep(0.02, 1, pressureRef.current);
-    const pulse = reducedMotion ? 0 : Math.sin(state.clock.elapsedTime * 11) * squeeze * 0.008;
-    fruitRig.current.scale.x = 1.04 * (1 - squeeze * 0.29) + pulse;
-    fruitRig.current.scale.y = 1.05 * (1 + squeeze * 0.11);
-    fruitRig.current.scale.z = 0.99 * (1 + squeeze * 0.09);
-    fruitRig.current.rotation.z = Math.sin(state.clock.elapsedTime * 9) * squeeze * (reducedMotion ? 0.002 : 0.014);
-    fruitRig.current.position.y = -0.02 - squeeze * 0.055;
-    fruitRig.current.visible = !burstRef.current;
-    if (shell.current) shell.current.visible = !burstRef.current;
+    squash.current = THREE.MathUtils.damp(squash.current, 0, 11, delta);
+    const punch = squash.current;
+    fruitRig.current.scale.x = 1.04 * (1 - punch * 0.08);
+    fruitRig.current.scale.y = 1.05 * (1 + punch * 0.055);
+    fruitRig.current.scale.z = 0.99 * (1 - punch * 0.045);
+    fruitRig.current.rotation.z = reducedMotion ? 0 : Math.sin(punch * Math.PI) * 0.04;
+    fruitRig.current.position.y = -0.02 - punch * 0.045;
   });
 
   const onPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
-    (event.target as Element).setPointerCapture?.(event.pointerId);
-    onObjectTouch();
-    if (burstRef.current) {
-      const id = performance.now();
-      setBursts((current) => [...current.slice(-3), { id, origin: [0, -0.03, 0.82], normal: [0, 0.2, 1], power: 0.72 }]);
-      onFeedback("fruit", 0.58);
-      return;
-    }
-    holding.current = true;
-    addPressure(0.19);
-  }, [addPressure, onFeedback, onObjectTouch]);
-
-  const onPointerUp = useCallback((event: ThreeEvent<PointerEvent>) => {
-    event.stopPropagation();
-    (event.target as Element).releasePointerCapture?.(event.pointerId);
-    holding.current = false;
-  }, []);
+    punchAt(event);
+  }, [punchAt]);
 
   return (
-    <group>
+    <group ref={stage}>
       <CourtyardSet />
-      <StrongmanCharacter pressure={pressure} burst={burst} reducedMotion={reducedMotion} />
+      <StrongmanCharacter pressure={clamp(hits / UNLOCK_HITS)} burst={Boolean(splitNormal)} reducedMotion={reducedMotion} />
       <WatermelonStand />
       <group ref={fruitRig} position={[0, -0.02, 0.34]}>
-        <mesh scale={[0.86, 0.9, 0.83]}>
-          <sphereGeometry args={[0.91, 72, 72]} />
-          <meshPhysicalMaterial
-            map={fleshTexture}
-            color="#e04752"
-            roughness={0.56}
-            clearcoat={0.08}
-            bumpMap={fleshTexture}
-            bumpScale={0.008}
+        <mesh
+          scale={[0.86, 0.9, 0.83]}
+          onPointerDown={onPointerDown}
+          onPointerOver={(event) => { event.stopPropagation(); setHovered(true); }}
+          onPointerOut={() => setHovered(false)}
+        >
+          <sphereGeometry
+            args={
+              splitNormal
+                ? [0.91, 72, 40, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2]
+                : [0.91, 72, 72]
+            }
           />
+          <WatermelonFleshMaterial damages={damages} map={fleshTexture} clipNormal={splitNormal} />
         </mesh>
         <mesh
           ref={shell}
           scale={[0.86, 0.9, 0.83]}
           castShadow
           receiveShadow
+          onPointerDown={onPointerDown}
+          onPointerOver={(event) => { event.stopPropagation(); setHovered(true); }}
+          onPointerOut={() => setHovered(false)}
         >
-          <sphereGeometry args={[1, 80, 80]} />
-          <WatermelonShellMaterial damages={damages} />
-          {damages.map((damage) => (
-            <DamageMark key={damage.id} damage={damage} />
-          ))}
-          {bursts.map((burst) => (
-            <FruitBurst key={burst.id} burst={burst} reducedMotion={reducedMotion} />
-          ))}
+          <sphereGeometry
+            args={
+              splitNormal
+                ? [1, 80, 40, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2]
+                : [1, 80, 80]
+            }
+          />
+          <WatermelonShellMaterial damages={damages} clipNormal={splitNormal} />
+          {damages
+            .filter((damage) => !splitNormal || isOnStaySide(damage.point, splitNormal))
+            .map((damage) => (
+              <DamageMark key={damage.id} damage={damage} />
+            ))}
+          {splitNormal && cutFacing && (
+            <mesh
+              quaternion={cutFacing}
+              position={[-splitNormal[0] * 0.012, -splitNormal[1] * 0.012, -splitNormal[2] * 0.012]}
+              onPointerDown={onPointerDown}
+              onPointerOver={(event) => { event.stopPropagation(); setHovered(true); }}
+              onPointerOut={() => setHovered(false)}
+            >
+              <circleGeometry args={[0.98, 48]} />
+              <meshPhysicalMaterial map={fleshTexture} color="#d4454f" roughness={0.5} side={THREE.DoubleSide} />
+            </mesh>
+          )}
         </mesh>
-        {!burst && <mesh position={[0, 0.93, 0]} rotation={[0.08, 0, -0.22]} castShadow>
-          <cylinderGeometry args={[0.045, 0.075, 0.23, 12]} />
-          <meshStandardMaterial color="#51472a" roughness={0.9} />
-        </mesh>}
+        {(!splitNormal || splitNormal[1] < 0.45) && (
+          <mesh position={[0, 0.93, 0]} rotation={[0.08, 0, -0.22]} castShadow>
+            <cylinderGeometry args={[0.045, 0.075, 0.23, 12]} />
+            <meshStandardMaterial color="#51472a" roughness={0.9} />
+          </mesh>
+        )}
       </group>
-      <WatermelonSplit active={burst} reducedMotion={reducedMotion} />
-      <mesh
-        position={[0, -0.02, 0.36]}
-        scale={[1.06, 1.1, 1.02]}
-        onPointerDown={onPointerDown}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onPointerOver={(event) => { event.stopPropagation(); setHovered(true); }}
-        onPointerOut={() => { if (!holding.current) setHovered(false); }}
-      >
-        <sphereGeometry args={[0.92, 28, 24]} />
-        <meshBasicMaterial transparent opacity={0.001} depthWrite={false} />
-      </mesh>
+      {splitNormal && (
+        <FallingWatermelonHalf cutNormal={splitNormal} fleshTexture={fleshTexture} reducedMotion={reducedMotion} />
+      )}
+      {bursts.map((item) => (
+        <ImpactBurst key={item.id} burst={item} reducedMotion={reducedMotion} />
+      ))}
     </group>
   );
 }
@@ -890,14 +1149,14 @@ type BarSegment = {
 };
 
 function makeBarSegments(bend: number, zOffset = 0) {
-  const count = 38;
-  const points = Array.from({ length: count + 1 }, (_, index) => {
+  const count = 48;
+  const raw = Array.from({ length: count + 1 }, (_, index) => {
     const t = index / count;
     const arch = Math.sin(t * Math.PI);
-    const elastic = arch * bend * 1.22;
-    const plasticKink = Math.pow(arch, 7) * Math.max(0, bend - 0.52) * 1.2;
-    const openBar = new THREE.Vector3(-2.28 + t * 4.56, elastic + plasticKink, zOffset + Math.sin(t * Math.PI * 2) * bend * 0.035);
-    const wrap = smoothstep(0.48, 0.98, bend);
+    const elastic = arch * bend * 1.18;
+    const plasticKink = Math.pow(arch, 6) * Math.max(0, bend - 0.48) * 1.05;
+    const openBar = new THREE.Vector3(-2.28 + t * 4.56, elastic + plasticKink, zOffset + Math.sin(t * Math.PI * 2) * bend * 0.04);
+    const wrap = smoothstep(0.58, 1, bend);
     const angle = -Math.PI / 2 + t * Math.PI * 2;
     const coil = new THREE.Vector3(
       -0.68 + Math.cos(angle) * (0.61 + Math.abs(zOffset) * 0.14),
@@ -906,6 +1165,8 @@ function makeBarSegments(bend: number, zOffset = 0) {
     );
     return openBar.lerp(coil, wrap);
   });
+  const curve = new THREE.CatmullRomCurve3(raw, false, "catmullrom", 0.35);
+  const points = curve.getSpacedPoints(count);
   return points.slice(0, -1).map((point, index): BarSegment => {
     const next = points[index + 1];
     const direction = next.clone().sub(point);
@@ -921,28 +1182,21 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onO
   const frontBar = useRef<THREE.InstancedMesh>(null);
   const backBar = useRef<THREE.InstancedMesh>(null);
   const rig = useRef<THREE.Group>(null);
+  const handle = useRef<THREE.Group>(null);
   const [bend, setBend] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [sparks, setSparks] = useState<ImpactBurstSpec[]>([]);
   const dragStart = useRef({ y: 0, bend: 0 });
   const permanent = useRef(0);
+  const targetBend = useRef(0);
+  const visualBend = useRef(0);
+  const draggingRef = useRef(false);
   const completionSent = useRef(false);
-  const frontSegments = useMemo(() => makeBarSegments(bend, 0.17), [bend]);
-  const backSegments = useMemo(() => makeBarSegments(bend, -0.17), [bend]);
-  const handlePoint = frontSegments[Math.floor(frontSegments.length / 2)]?.position ?? new THREE.Vector3();
-
-  useLayoutEffect(() => {
-    const matrix = new THREE.Matrix4();
-    const applySegments = (mesh: THREE.InstancedMesh | null, segments: BarSegment[]) => {
-      if (!mesh) return;
-      segments.forEach((segment, index) => {
-        matrix.compose(segment.position, segment.quaternion, new THREE.Vector3(1, segment.length, 1));
-        mesh.setMatrixAt(index, matrix);
-      });
-      mesh.instanceMatrix.needsUpdate = true;
-    };
-    applySegments(frontBar.current, frontSegments);
-    applySegments(backBar.current, backSegments);
-  }, [frontSegments, backSegments]);
+  const lastSpark = useRef(0);
+  const barCount = 48;
+  const heat = smoothstep(0.28, 1, bend);
+  const metalColor = useMemo(() => new THREE.Color("#707575").lerp(new THREE.Color("#ffb056"), heat), [heat]);
+  const backColor = useMemo(() => new THREE.Color("#545a5a").lerp(new THREE.Color("#e08a3c"), heat), [heat]);
 
   useEffect(() => {
     document.body.style.cursor = dragging ? "grabbing" : "default";
@@ -951,26 +1205,71 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onO
     };
   }, [dragging]);
 
-  useFrame((state) => {
+  useFrame((state, delta) => {
+    visualBend.current = THREE.MathUtils.damp(
+      visualBend.current,
+      targetBend.current,
+      draggingRef.current ? 16 : 4.2,
+      delta,
+    );
+    const matrix = new THREE.Matrix4();
+    const scale = new THREE.Vector3();
+    const apply = (mesh: THREE.InstancedMesh | null, zOffset: number) => {
+      if (!mesh) return;
+      const segments = makeBarSegments(visualBend.current, zOffset);
+      segments.forEach((segment, index) => {
+        scale.set(1, segment.length, 1);
+        matrix.compose(segment.position, segment.quaternion, scale);
+        mesh.setMatrixAt(index, matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      return segments;
+    };
+    const front = apply(frontBar.current, 0.17);
+    apply(backBar.current, -0.17);
+    const mid = front?.[Math.floor(front.length / 2)];
+    if (handle.current && mid) handle.current.position.copy(mid.position);
+
     if (!rig.current) return;
-    rig.current.rotation.z = bend > 0.55 ? Math.sin(state.clock.elapsedTime * 46) * bend * 0.0018 : 0;
+    const shake = reducedMotion ? 0 : (draggingRef.current && visualBend.current > 0.4
+      ? Math.sin(state.clock.elapsedTime * 52) * visualBend.current * 0.004
+      : visualBend.current > 0.55
+        ? Math.sin(state.clock.elapsedTime * 46) * visualBend.current * 0.0018
+        : 0);
+    rig.current.rotation.z = shake;
+
+    if (draggingRef.current && visualBend.current > 0.36) {
+      const bucket = Math.floor(visualBend.current * 14);
+      if (bucket > lastSpark.current) {
+        lastSpark.current = bucket;
+        const origin = (mid?.position.clone() ?? new THREE.Vector3()).toArray() as [number, number, number];
+        setSparks((current) => [
+          ...current.slice(-3),
+          { id: performance.now(), origin, normal: [0, 1, 0.15], power: 0.45 + visualBend.current * 0.5, kind: "spark" },
+        ]);
+        punchCamera(0.035 + visualBend.current * 0.04);
+      }
+    }
   });
 
   const onPointerDown = (event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
     (event.target as Element).setPointerCapture?.(event.pointerId);
     onObjectTouch();
-    dragStart.current = { y: event.nativeEvent.clientY, bend };
+    dragStart.current = { y: event.nativeEvent.clientY, bend: targetBend.current };
+    draggingRef.current = true;
     setDragging(true);
     onFeedback("metal", 0.32);
+    punchCamera(0.05);
   };
 
   const onPointerMove = (event: ThreeEvent<PointerEvent>) => {
-    if (!dragging) return;
+    if (!draggingRef.current) return;
     event.stopPropagation();
     const travel = dragStart.current.y - event.nativeEvent.clientY;
     const resistance = travel <= 60 ? travel / 430 : 0.14 + (travel - 60) / 250;
     const next = clamp(Math.max(permanent.current, dragStart.current.bend + resistance));
+    targetBend.current = next;
     setBend(next);
     onProgress(next);
     if (next > 0.28 && Math.floor(next * 20) !== Math.floor(bend * 20)) onFeedback("metal", next);
@@ -982,10 +1281,12 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onO
   };
 
   const onPointerUp = (event: ThreeEvent<PointerEvent>) => {
-    if (!dragging) return;
+    if (!draggingRef.current) return;
     (event.target as Element).releasePointerCapture?.(event.pointerId);
+    draggingRef.current = false;
     setDragging(false);
-    permanent.current = Math.max(permanent.current, bend > 0.62 ? bend : bend * 0.3);
+    permanent.current = Math.max(permanent.current, targetBend.current > 0.62 ? targetBend.current : targetBend.current * 0.3);
+    targetBend.current = permanent.current;
     setBend(permanent.current);
     onProgress(permanent.current);
   };
@@ -1016,16 +1317,30 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onO
         </group>
       ))}
 
-      <instancedMesh ref={frontBar} args={[undefined, undefined, frontSegments.length]} castShadow receiveShadow>
+      <instancedMesh ref={frontBar} args={[undefined, undefined, barCount]} castShadow receiveShadow>
         <cylinderGeometry args={[0.078, 0.078, 1, 14]} />
-        <meshPhysicalMaterial color="#707575" metalness={0.9} roughness={0.34} clearcoat={0.2} />
+        <meshPhysicalMaterial
+          color={metalColor}
+          emissive={metalColor}
+          emissiveIntensity={heat * 0.42}
+          metalness={0.92}
+          roughness={0.34 - heat * 0.12}
+          clearcoat={0.28}
+        />
       </instancedMesh>
-      <instancedMesh ref={backBar} args={[undefined, undefined, backSegments.length]} castShadow receiveShadow>
+      <instancedMesh ref={backBar} args={[undefined, undefined, barCount]} castShadow receiveShadow>
         <cylinderGeometry args={[0.078, 0.078, 1, 14]} />
-        <meshPhysicalMaterial color="#545a5a" metalness={0.88} roughness={0.38} clearcoat={0.18} />
+        <meshPhysicalMaterial
+          color={backColor}
+          emissive={backColor}
+          emissiveIntensity={heat * 0.28}
+          metalness={0.9}
+          roughness={0.38 - heat * 0.1}
+          clearcoat={0.22}
+        />
       </instancedMesh>
 
-      <group position={handlePoint}>
+      <group ref={handle} position={[0, 0, 0.17]}>
         <mesh
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -1047,19 +1362,20 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onO
           <torusGeometry args={[0.31, 0.018, 12, 48]} />
           <meshBasicMaterial color="#dfff37" transparent opacity={dragging ? 0.95 : 0.5} />
         </mesh>
+        {bend > 0.62 && (
+          <Sparkles
+            count={Math.round(10 + bend * 12)}
+            scale={[1.35, 0.85, 0.6]}
+            size={2.8}
+            speed={1.15}
+            color="#f0ff79"
+            opacity={0.78}
+          />
+        )}
       </group>
-
-      {bend > 0.72 && (
-        <Sparkles
-          count={Math.round(8 + bend * 9)}
-          scale={[1.35, 0.85, 0.6]}
-          position={handlePoint}
-          size={2.4}
-          speed={0.9}
-          color="#f0ff79"
-          opacity={0.68}
-        />
-      )}
+      {sparks.map((item) => (
+        <ImpactBurst key={item.id} burst={item} reducedMotion={reducedMotion} floorY={-0.9} />
+      ))}
       </group>
     </group>
   );
@@ -1100,9 +1416,9 @@ function createCarShapes() {
   return { lower, cabin, frontWindow, rearWindow };
 }
 
-function Wheel({ position, far = false }: { position: [number, number, number]; far?: boolean }) {
+function Wheel({ position, far = false, spin = 0 }: { position: [number, number, number]; far?: boolean; spin?: number }) {
   return (
-    <group position={position} rotation={[Math.PI / 2, 0, 0]}>
+    <group position={position} rotation={[Math.PI / 2, spin, 0]}>
       <mesh castShadow receiveShadow>
         <cylinderGeometry args={[0.43, 0.43, 0.24, 32]} />
         <meshStandardMaterial color="#111313" roughness={0.9} />
@@ -1139,22 +1455,25 @@ function Suspension({ x, wheelY, z }: { x: number; wheelY: number; z: number }) 
 
 type CarModelProps = {
   lift: number;
+  spin: number;
+  bounce: number;
   onPointerDown: (event: ThreeEvent<PointerEvent>) => void;
   onPointerMove: (event: ThreeEvent<PointerEvent>) => void;
   onPointerUp: (event: ThreeEvent<PointerEvent>) => void;
   dragging: boolean;
 };
 
-function CarModel({ lift, onPointerDown, onPointerMove, onPointerUp, dragging }: CarModelProps) {
+function CarModel({ lift, spin, bounce, onPointerDown, onPointerMove, onPointerUp, dragging }: CarModelProps) {
   const shapes = useMemo(createCarShapes, []);
   const angle = 0.015 + smoothstep(0.08, 1, lift) * 0.31;
   const axleRise = Math.sin(angle) * 2.7;
   const groundCompensation = axleRise * (1 - smoothstep(0.34, 0.63, lift));
-  const rearWheelY = -0.56 - groundCompensation;
+  const rearWheelY = -0.56 - groundCompensation + bounce * 0.04;
   const paint = "#d8d7cf";
+  const shake = dragging ? bounce * 0.01 : 0;
 
   return (
-    <group position={[-1.35, -0.75, 0]} rotation-z={angle}>
+    <group position={[-1.35, -0.75, 0]} rotation-z={angle + shake}>
       <group position={[1.35, 0.75, 0]}>
         <mesh castShadow receiveShadow>
           <extrudeGeometry args={[shapes.lower, { depth: 1.18, bevelEnabled: true, bevelSize: 0.06, bevelThickness: 0.06, bevelSegments: 3 }]} />
@@ -1242,12 +1561,12 @@ function CarModel({ lift, onPointerDown, onPointerMove, onPointerUp, dragging }:
           <meshStandardMaterial color="#353a3a" metalness={0.88} roughness={0.46} />
         </mesh>
 
-        <Suspension x={-1.35} wheelY={-0.56} z={0.64} />
+        <Suspension x={-1.35} wheelY={-0.56 + bounce * 0.02} z={0.64} />
         <Suspension x={1.35} wheelY={rearWheelY} z={0.64} />
-        <Wheel position={[-1.35, -0.56, 0.67]} />
-        <Wheel position={[-1.35, -0.56, -0.08]} far />
-        <Wheel position={[1.35, rearWheelY, 0.67]} />
-        <Wheel position={[1.35, rearWheelY, -0.08]} far />
+        <Wheel position={[-1.35, -0.56, 0.67]} spin={spin * 0.15} />
+        <Wheel position={[-1.35, -0.56, -0.08]} far spin={spin * 0.15} />
+        <Wheel position={[1.35, rearWheelY, 0.67]} spin={spin} />
+        <Wheel position={[1.35, rearWheelY, -0.08]} far spin={spin} />
 
         <group position={[1.92, 0.08, 1.06]}>
           <mesh
@@ -1275,9 +1594,18 @@ function CarModel({ lift, onPointerDown, onPointerMove, onPointerUp, dragging }:
 
 function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onObjectTouch }: Omit<ChallengeCanvasProps, "challenge">) {
   const [lift, setLift] = useState(0);
+  const [spin, setSpin] = useState(0);
+  const [bounce, setBounce] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [dust, setDust] = useState<ImpactBurstSpec[]>([]);
   const dragStart = useRef({ y: 0, lift: 0 });
   const completionSent = useRef(false);
+  const targetLift = useRef(0);
+  const visualLift = useRef(0);
+  const draggingRef = useRef(false);
+  const dustSent = useRef(false);
+  const spinRef = useRef(0);
+  const bounceRef = useRef(0);
 
   useEffect(() => {
     document.body.style.cursor = dragging ? "grabbing" : "default";
@@ -1286,35 +1614,73 @@ function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onObj
     };
   }, [dragging]);
 
+  useFrame((state, delta) => {
+    visualLift.current = THREE.MathUtils.damp(
+      visualLift.current,
+      targetLift.current,
+      draggingRef.current ? 8.5 : 4.6,
+      delta,
+    );
+    bounceRef.current = THREE.MathUtils.damp(
+      bounceRef.current,
+      draggingRef.current ? Math.sin(state.clock.elapsedTime * 28) * visualLift.current : 0,
+      10,
+      delta,
+    );
+    spinRef.current += delta * (0.4 + visualLift.current * 3.4) * (draggingRef.current ? 1 : 0.15);
+    if (Math.abs(visualLift.current - lift) > 0.012) setLift(visualLift.current);
+    if (Math.abs(spinRef.current - spin) > 0.04) setSpin(spinRef.current);
+    if (Math.abs(bounceRef.current - bounce) > 0.02) setBounce(bounceRef.current);
+
+    if (visualLift.current > 0.63 && !dustSent.current) {
+      dustSent.current = true;
+      setDust((current) => [
+        ...current.slice(-2),
+        { id: performance.now(), origin: [1.55, -1.05, 0.35], normal: [0.15, 0.85, 0.2], power: 0.7, kind: "dust" },
+        { id: performance.now() + 1, origin: [1.55, -1.05, -0.25], normal: [-0.1, 0.9, -0.15], power: 0.62, kind: "dust" },
+      ]);
+      onFeedback("car", 0.92);
+      punchCamera(0.12);
+    }
+    if (visualLift.current < 0.48) dustSent.current = false;
+  });
+
   const onPointerDown = (event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
     (event.target as Element).setPointerCapture?.(event.pointerId);
     onObjectTouch();
-    dragStart.current = { y: event.nativeEvent.clientY, lift };
+    dragStart.current = { y: event.nativeEvent.clientY, lift: targetLift.current };
+    draggingRef.current = true;
     setDragging(true);
     onFeedback("car", 0.28);
+    onFeedback("car-strain", Math.max(0.25, targetLift.current));
+    punchCamera(0.04);
   };
 
   const onPointerMove = (event: ThreeEvent<PointerEvent>) => {
-    if (!dragging) return;
+    if (!draggingRef.current) return;
     event.stopPropagation();
     const travel = dragStart.current.y - event.nativeEvent.clientY;
     const next = clamp(dragStart.current.lift + travel / 300);
-    setLift(next);
+    targetLift.current = next;
     onProgress(next);
+    onFeedback("car-strain", 0.2 + next * 0.7);
     if (Math.floor(next * 14) !== Math.floor(lift * 14)) onFeedback("car", next);
     if (next >= 0.9 && !completionSent.current) {
       completionSent.current = true;
       onComplete();
+      punchCamera(0.16);
     }
   };
 
   const onPointerUp = (event: ThreeEvent<PointerEvent>) => {
-    if (!dragging) return;
+    if (!draggingRef.current) return;
     (event.target as Element).releasePointerCapture?.(event.pointerId);
+    draggingRef.current = false;
     setDragging(false);
-    const settled = lift > 0.55 ? lift : lift * 0.38;
-    setLift(settled);
+    onFeedback("car-strain", 0);
+    const settled = targetLift.current > 0.55 ? targetLift.current : targetLift.current * 0.38;
+    targetLift.current = settled;
     onProgress(settled);
   };
 
@@ -1333,12 +1699,285 @@ function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onObj
       <group position={[0, -0.1, 0]} rotation={[0.04, -0.18, 0]}>
       <CarModel
         lift={lift}
+        spin={spin}
+        bounce={bounce}
         dragging={dragging}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
       />
+      {dust.map((item) => (
+        <ImpactBurst key={item.id} burst={item} reducedMotion={reducedMotion} floorY={-1.08} />
+      ))}
       </group>
+    </group>
+  );
+}
+
+const SPIKE_BOXES = [
+  { y: 0.2, w: 2.08, h: 0.34, d: 0.6 },
+  { y: -0.16, w: 2.16, h: 0.34, d: 0.64 },
+  { y: -0.52, w: 2.1, h: 0.34, d: 0.58 },
+] as const;
+const SPIKE_HITS = 14;
+const SPIKE_SHAFT = 1.12;
+const SPIKE_TIP_START = SPIKE_BOXES[0].y + SPIKE_BOXES[0].h / 2 + 0.09;
+const SPIKE_TIP_END = SPIKE_BOXES[2].y - SPIKE_BOXES[2].h / 2 - 0.32;
+const SPIKE_TRAVEL = SPIKE_TIP_START - SPIKE_TIP_END;
+
+function HolePlateMaterial({ hole, color }: { hole: number; color: string }) {
+  const material = useMemo(() => {
+    const next = new THREE.MeshStandardMaterial({
+      color,
+      metalness: 0.58,
+      roughness: 0.44,
+      side: THREE.DoubleSide,
+    });
+    next.onBeforeCompile = (shader) => {
+      shader.uniforms.holeRadius = { value: 0 };
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vObjPos;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvObjPos = position;");
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vObjPos;\nuniform float holeRadius;")
+        .replace(
+          "#include <clipping_planes_fragment>",
+          `#include <clipping_planes_fragment>
+          if (holeRadius > 0.002 && length(vObjPos.xz) < holeRadius) discard;`,
+        );
+      next.userData.shader = shader;
+    };
+    next.customProgramCacheKey = () => "steel-hole-plate-v1";
+    return next;
+  }, [color]);
+
+  useFrame(() => {
+    const shader = material.userData.shader as { uniforms: { holeRadius: { value: number } } } | undefined;
+    if (shader) shader.uniforms.holeRadius.value = hole;
+  });
+
+  useEffect(() => () => material.dispose(), [material]);
+  return <primitive object={material} attach="material" />;
+}
+
+function SteelCrate({
+  width,
+  height,
+  depth,
+  holeTop,
+  holeBottom,
+}: {
+  width: number;
+  height: number;
+  depth: number;
+  holeTop: number;
+  holeBottom: number;
+}) {
+  const wall = 0.052;
+  const steel = "#4c5150";
+  const rust = "#6a4634";
+  return (
+    <group>
+      <mesh position={[0, 0, depth / 2 - wall / 2]} castShadow>
+        <boxGeometry args={[width, height, wall]} />
+        <meshStandardMaterial color={steel} metalness={0.64} roughness={0.45} />
+      </mesh>
+      <mesh position={[0, 0, -depth / 2 + wall / 2]} castShadow>
+        <boxGeometry args={[width, height, wall]} />
+        <meshStandardMaterial color="#3f4443" metalness={0.62} roughness={0.5} />
+      </mesh>
+      <mesh position={[-width / 2 + wall / 2, 0, 0]} castShadow>
+        <boxGeometry args={[wall, height, depth - wall * 2]} />
+        <meshStandardMaterial color="#555c5a" metalness={0.6} roughness={0.48} />
+      </mesh>
+      <mesh position={[width / 2 - wall / 2, 0, 0]} castShadow>
+        <boxGeometry args={[wall, height, depth - wall * 2]} />
+        <meshStandardMaterial color="#555c5a" metalness={0.6} roughness={0.48} />
+      </mesh>
+      <mesh position={[0, height / 2 - 0.018, 0]} castShadow>
+        <boxGeometry args={[width - wall, 0.038, depth - wall]} />
+        <HolePlateMaterial hole={holeTop} color={rust} />
+      </mesh>
+      <mesh position={[0, -height / 2 + 0.018, 0]} castShadow>
+        <boxGeometry args={[width - wall, 0.038, depth - wall]} />
+        <HolePlateMaterial hole={holeBottom} color="#5a3a2c" />
+      </mesh>
+      {holeTop > 0.02 && (
+        <mesh position={[0, height / 2 - 0.03, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[holeTop * 1.05, 0.012, 8, 24]} />
+          <meshStandardMaterial color="#2b2e2d" metalness={0.7} roughness={0.35} />
+        </mesh>
+      )}
+      {holeBottom > 0.02 && (
+        <mesh position={[0, -height / 2 + 0.03, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[holeBottom * 1.05, 0.012, 8, 24]} />
+          <meshStandardMaterial color="#2b2e2d" metalness={0.7} roughness={0.35} />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+function SpikeChallenge({
+  reducedMotion,
+  onProgress,
+  onComplete,
+  onFeedback,
+  onObjectTouch,
+}: Omit<ChallengeCanvasProps, "challenge">) {
+  const rod = useRef<THREE.Group>(null);
+  const visualDrive = useRef(0);
+  const targetDrive = useRef(0);
+  const lastHitAt = useRef(0);
+  const lastFaces = useRef(0);
+  const hitsRef = useRef(0);
+  const completionSent = useRef(false);
+  const [hits, setHits] = useState(0);
+  const [drive, setDrive] = useState(0);
+  const [hovered, setHovered] = useState(false);
+  const [sparks, setSparks] = useState<ImpactBurstSpec[]>([]);
+
+  useEffect(() => {
+    document.body.style.cursor = hovered ? "pointer" : "default";
+    return () => {
+      document.body.style.cursor = "default";
+    };
+  }, [hovered]);
+
+  const punchRod = useCallback((event: ThreeEvent<PointerEvent>) => {
+    event.stopPropagation();
+    const now = performance.now();
+    if (now - lastHitAt.current < 90) return;
+    lastHitAt.current = now;
+    onObjectTouch();
+
+    const nextHits = hitsRef.current + 1;
+    hitsRef.current = nextHits;
+    const nextDrive = Math.min(1, targetDrive.current + 1 / SPIKE_HITS);
+    targetDrive.current = nextDrive;
+    setHits(nextHits);
+    punchCamera(0.05 + nextDrive * 0.04);
+
+    const plateY = SPIKE_TIP_START + 0.04 - visualDrive.current * SPIKE_TRAVEL + SPIKE_SHAFT;
+    setSparks((current) => [
+      ...current.slice(-4),
+      {
+        id: now,
+        origin: [0, plateY, 0.22],
+        normal: [0, 1, 0.2],
+        power: 0.5 + nextDrive * 0.4,
+        kind: "spark",
+      },
+    ]);
+
+    onProgress(nextDrive, nextHits);
+    onFeedback("metal", 0.48 + nextDrive * 0.4);
+    if (nextDrive >= 0.9 && !completionSent.current) {
+      completionSent.current = true;
+      onComplete();
+    }
+  }, [onComplete, onFeedback, onObjectTouch, onProgress]);
+
+  useFrame((_, delta) => {
+    visualDrive.current = THREE.MathUtils.damp(visualDrive.current, targetDrive.current, 8.5, delta);
+    if (Math.abs(visualDrive.current - drive) > 0.01) setDrive(visualDrive.current);
+    const tipY = SPIKE_TIP_START - visualDrive.current * SPIKE_TRAVEL;
+    if (rod.current) {
+      rod.current.position.y = tipY + SPIKE_SHAFT;
+      const punch = 1 - Math.min(1, (performance.now() - lastHitAt.current) / 140);
+      rod.current.rotation.z = reducedMotion ? 0 : Math.sin(punch * Math.PI) * 0.012;
+    }
+
+    let faces = 0;
+    SPIKE_BOXES.forEach((box) => {
+      if (tipY < box.y + box.h / 2 - 0.01) faces += 1;
+      if (tipY < box.y - box.h / 2 - 0.01) faces += 1;
+    });
+    if (faces > lastFaces.current) {
+      lastFaces.current = faces;
+      const pierceY = tipY;
+      setSparks((current) => [
+        ...current.slice(-4),
+        {
+          id: performance.now() + faces,
+          origin: [0, pierceY, 0.22],
+          normal: [0, -1, 0.4],
+          power: 0.72,
+          kind: "spark",
+        },
+      ]);
+      onFeedback("metal", 0.82);
+      punchCamera(0.07);
+    }
+  });
+
+  return (
+    <group>
+      <CourtyardSet />
+      <StrongmanCharacter
+        pressure={clamp(drive)}
+        burst={drive >= 0.9}
+        reducedMotion={reducedMotion}
+        mode="hammer"
+        strike={hits}
+        position={[-0.08, -0.02, -0.7]}
+        scale={0.94}
+      />
+      <mesh position={[0, -1.12, 0.2]} receiveShadow>
+        <boxGeometry args={[2.6, 0.08, 0.95]} />
+        <meshStandardMaterial color="#3a332c" roughness={0.9} />
+      </mesh>
+      {[-0.82, 0.82].map((x) => (
+        <mesh key={x} position={[x, -0.92, 0.2]} castShadow>
+          <boxGeometry args={[0.16, 0.38, 0.7]} />
+          <meshStandardMaterial color="#2c3030" metalness={0.45} roughness={0.62} />
+        </mesh>
+      ))}
+      {SPIKE_BOXES.map((box, index) => {
+        const tipY = SPIKE_TIP_START - drive * SPIKE_TRAVEL;
+        const holeTop = tipY < box.y + box.h / 2 - 0.02 ? 0.078 : 0;
+        const holeBottom = tipY < box.y - box.h / 2 - 0.02 ? 0.078 : 0;
+        return (
+          <group key={index} position={[0, box.y, 0.22]}>
+            <SteelCrate width={box.w} height={box.h} depth={box.d} holeTop={holeTop} holeBottom={holeBottom} />
+          </group>
+        );
+      })}
+      <group ref={rod} position={[0, SPIKE_TIP_START + SPIKE_SHAFT, 0.22]}>
+        <mesh
+          position={[0, 0.02, 0]}
+          castShadow
+          onPointerDown={punchRod}
+          onPointerOver={(event) => { event.stopPropagation(); setHovered(true); }}
+          onPointerOut={() => setHovered(false)}
+        >
+          <cylinderGeometry args={[0.155, 0.175, 0.07, 8]} />
+          <meshStandardMaterial color="#6a7170" metalness={0.78} roughness={0.32} />
+        </mesh>
+        {[0, 1, 2, 3, 4].map((index) => (
+          <mesh key={index} position={[Math.cos(index * 1.15) * 0.04, 0.055, Math.sin(index * 1.15) * 0.03]} rotation={[0.1, index, 0.2]} castShadow>
+            <boxGeometry args={[0.08, 0.028, 0.035]} />
+            <meshStandardMaterial color="#8a918f" metalness={0.7} roughness={0.38} />
+          </mesh>
+        ))}
+        <mesh
+          position={[0, -SPIKE_SHAFT / 2, 0]}
+          castShadow
+          onPointerDown={punchRod}
+          onPointerOver={(event) => { event.stopPropagation(); setHovered(true); }}
+          onPointerOut={() => setHovered(false)}
+        >
+          <cylinderGeometry args={[0.042, 0.048, SPIKE_SHAFT, 12]} />
+          <meshStandardMaterial color="#3e4444" metalness={0.72} roughness={0.36} />
+        </mesh>
+        <mesh position={[0, -SPIKE_SHAFT - 0.06, 0]} castShadow>
+          <coneGeometry args={[0.046, 0.12, 10]} />
+          <meshStandardMaterial color="#2d3232" metalness={0.74} roughness={0.3} />
+        </mesh>
+      </group>
+      {sparks.map((item) => (
+        <ImpactBurst key={item.id} burst={item} reducedMotion={reducedMotion} floorY={-1.08} />
+      ))}
     </group>
   );
 }
@@ -1348,16 +1987,21 @@ function CameraRig({ challenge, reducedMotion }: { challenge: ChallengeNumber; r
   const target = useMemo(() => {
     if (challenge === 1) return new THREE.Vector3(0, 0.32, 7.15);
     if (challenge === 2) return new THREE.Vector3(0, 0.25, 7.05);
+    if (challenge === 4) return new THREE.Vector3(0.15, 0.48, 7.45);
     return new THREE.Vector3(0, 0.55, 7.6);
   }, [challenge]);
 
   useFrame((state, delta) => {
+    cameraKick.current = THREE.MathUtils.damp(cameraKick.current, 0, 9, delta);
     camera.position.lerp(target, reducedMotion ? 1 : 1 - Math.exp(-delta * 3.6));
-    camera.lookAt(0, challenge === 3 ? -0.08 : -0.12, 0);
+    camera.lookAt(0, challenge === 3 ? -0.08 : challenge === 4 ? 0.08 : -0.12, 0);
     if (!reducedMotion) {
-      const pointerAmount = challenge === 1 ? 0.11 : 0.07;
-      camera.position.x += (state.pointer.x * pointerAmount - camera.position.x * 0.012) * delta;
-      camera.position.y += state.pointer.y * pointerAmount * delta;
+      const pointerAmount = challenge === 1 ? 0.035 : 0.07;
+      const kick = cameraKick.current;
+      camera.position.x += state.pointer.x * pointerAmount * delta;
+      camera.position.y += state.pointer.y * pointerAmount * 0.45 * delta;
+      camera.position.x += Math.sin(state.clock.elapsedTime * 54) * kick * 0.08;
+      camera.position.y += Math.cos(state.clock.elapsedTime * 47) * kick * 0.05;
     }
   });
   return null;
@@ -1371,7 +2015,7 @@ function ResponsiveStage({
   children: React.ReactNode;
 }) {
   const { viewport } = useThree();
-  const targetWidth = challenge === 3 ? 6.5 : challenge === 2 ? 6.25 : 5.25;
+  const targetWidth = challenge === 3 ? 6.5 : challenge === 4 ? 6.1 : challenge === 2 ? 6.25 : 5.25;
   const scale = Math.min(1, viewport.width / targetWidth);
   return <group scale={scale}>{children}</group>;
 }
@@ -1386,21 +2030,21 @@ function Studio({ reducedMotion }: { reducedMotion: boolean }) {
         position={[-3.8, 5.5, 4.5]}
         intensity={3.1}
         color="#fffdf4"
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
         shadow-bias={-0.0004}
       />
       <pointLight position={[4, 1.5, 3.5]} intensity={12} distance={9} color="#dfff8a" />
       <pointLight position={[-4, -1.8, 2]} intensity={7} distance={8} color="#d5d9ff" />
       <ContactShadows
-        position={[0, -1.18, 0]}
-        opacity={0.33}
+        position={[0, -1.17, 0]}
+        opacity={0.22}
         scale={8.5}
-        blur={2.6}
+        blur={3.4}
         far={4.3}
-        resolution={reducedMotion ? 128 : 256}
-        frames={reducedMotion ? 1 : undefined}
-        color="#353830"
+        resolution={reducedMotion ? 256 : 512}
+        frames={1}
+        color="#2c2824"
       />
     </>
   );
@@ -1414,19 +2058,22 @@ export default function ChallengeCanvas({
   onFeedback,
   onObjectTouch,
 }: ChallengeCanvasProps) {
+  const background = challenge === 1 || challenge === 4 ? "#e7ded2" : "#ecece5";
   return (
     <Canvas
       className="challenge-canvas"
       dpr={[1, 1.7]}
       camera={{ fov: 35, near: 0.1, far: 60, position: [0, 0.3, 6.8] }}
-      gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
+      gl={{ antialias: false, alpha: false, powerPreference: "high-performance" }}
       shadows
       onCreated={({ gl }) => {
         gl.outputColorSpace = THREE.SRGBColorSpace;
         gl.toneMapping = THREE.ACESFilmicToneMapping;
         gl.toneMappingExposure = 1.08;
+        gl.localClippingEnabled = true;
       }}
     >
+      <color attach="background" args={[background]} />
       <CameraRig challenge={challenge} reducedMotion={reducedMotion} />
       <Studio reducedMotion={reducedMotion} />
       <ResponsiveStage challenge={challenge}>
@@ -1445,7 +2092,20 @@ export default function ChallengeCanvas({
         {challenge === 3 && (
           <CarChallenge reducedMotion={reducedMotion} onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} onObjectTouch={onObjectTouch} />
         )}
+        {challenge === 4 && (
+          <SpikeChallenge reducedMotion={reducedMotion} onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} onObjectTouch={onObjectTouch} />
+        )}
       </ResponsiveStage>
+      <EffectComposer multisampling={0}>
+        <SMAA />
+        <Bloom
+          luminanceThreshold={0.92}
+          intensity={reducedMotion ? 0.08 : 0.18}
+          mipmapBlur
+          luminanceSmoothing={0.35}
+        />
+        <Vignette offset={0.32} darkness={0.22} />
+      </EffectComposer>
     </Canvas>
   );
 }
