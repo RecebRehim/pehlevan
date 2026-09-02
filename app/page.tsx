@@ -365,18 +365,34 @@ export default function Home() {
   }, [soundEnabled]);
 
   const handleObjectTouch = useCallback(() => {
-    playRealVoiceOnce();
     if (!soundEnabled) return;
-    if (challenge === 2 && !bendClipPlayed.current && bendStartRef.current) {
+    if (challenge === 2) {
+      if (bendClipPlayed.current || !bendStartRef.current) return;
       bendClipPlayed.current = true;
-      bendStartRef.current.currentTime = 0;
-      void bendStartRef.current.play().catch(() => undefined);
+      const clip = bendStartRef.current;
+      let plays = 0;
+      const playNext = () => {
+        plays += 1;
+        if (plays > 2) {
+          clip.removeEventListener("ended", playNext);
+          return;
+        }
+        clip.currentTime = 0;
+        void clip.play().catch(() => undefined);
+      };
+      clip.addEventListener("ended", playNext);
+      playNext();
+      return;
     }
-    if (challenge === 4 && !spikeClipPlayed.current && spikeClipRef.current) {
-      spikeClipPlayed.current = true;
-      spikeClipRef.current.currentTime = 0;
-      void spikeClipRef.current.play().catch(() => undefined);
+    if (challenge === 4) {
+      if (!spikeClipPlayed.current && spikeClipRef.current) {
+        spikeClipPlayed.current = true;
+        spikeClipRef.current.currentTime = 0;
+        void spikeClipRef.current.play().catch(() => undefined);
+        return;
+      }
     }
+    playRealVoiceOnce();
   }, [challenge, playRealVoiceOnce, soundEnabled]);
 
   const feedback = useCallback(
