@@ -17,6 +17,14 @@ export const metadata: Metadata = {
     description: "Break, bend, lift, and punch through a cinematic series of tactile 3D challenges.",
     images: ["/og.png"],
   },
+  formatDetection: {
+    telephone: false,
+  },
+  appleWebApp: {
+    capable: true,
+    title: "Impossible",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {
@@ -24,6 +32,8 @@ export const viewport: Viewport = {
   colorScheme: "light",
   width: "device-width",
   initialScale: 1,
+  viewportFit: "cover",
+  interactiveWidget: "overlays-content",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

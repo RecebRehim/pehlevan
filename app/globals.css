@@ -16,12 +16,18 @@
 html,
 body {
   margin: 0;
+  height: 100%;
   min-height: 100%;
+  min-height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 html {
   background: var(--paper);
   scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -29,8 +35,11 @@ body {
   color: var(--ink);
   font-family: var(--font-sans);
   overflow: hidden;
+  touch-action: none;
   -webkit-font-smoothing: antialiased;
   text-rendering: geometricPrecision;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
 }
 
 button,
@@ -43,12 +52,14 @@ button {
 }
 
 .experience {
-  position: relative;
+  position: fixed;
+  inset: 0;
   width: 100%;
-  min-height: 100vh;
-  min-height: 100svh;
+  height: 100%;
+  height: 100dvh;
   overflow: hidden;
   isolation: isolate;
+  touch-action: none;
   background:
     linear-gradient(115deg, rgba(255, 255, 255, 0.72), transparent 38%),
     radial-gradient(circle at 52% 47%, #fafaf5 0, #efefe9 41%, #dfdfd7 100%);
@@ -138,7 +149,7 @@ button {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  padding: 24px 34px;
+  padding: max(12px, env(safe-area-inset-top, 0px)) max(34px, env(safe-area-inset-right, 0px)) 12px max(34px, env(safe-area-inset-left, 0px));
 }
 
 .brand {
@@ -188,10 +199,12 @@ button {
   justify-self: end;
   align-items: center;
   gap: 9px;
-  padding: 8px 0 8px 10px;
+  min-height: 44px;
+  padding: 8px 4px 8px 10px;
   border: 0;
   background: transparent;
   cursor: pointer;
+  touch-action: manipulation;
   opacity: 0.68;
   transition: opacity 180ms ease;
 }
@@ -237,11 +250,12 @@ button {
   position: absolute;
   z-index: 45;
   top: 50%;
-  left: 34px;
+  left: max(34px, env(safe-area-inset-left, 0px));
   display: flex;
   flex-direction: column;
   gap: 11px;
   transform: translateY(-50%);
+  pointer-events: none;
 }
 
 .rail-step {
@@ -284,9 +298,10 @@ button {
   position: relative;
   z-index: 5;
   width: 100%;
-  height: 100vh;
-  height: 100svh;
+  height: 100%;
+  height: 100dvh;
   user-select: none;
+  -webkit-user-select: none;
 }
 
 .scene-number {
@@ -358,9 +373,20 @@ button {
   height: 100% !important;
   outline: 0;
   touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .canvas-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--paper) 90%, transparent);
+}
+
+.canvas-loading::after {
+  content: "";
   position: absolute;
   top: 52%;
   left: 50%;
@@ -386,13 +412,22 @@ button {
 .bottom-ui {
   position: absolute;
   z-index: 50;
-  right: 34px;
-  bottom: 26px;
-  left: 34px;
+  right: max(34px, env(safe-area-inset-right, 0px));
+  bottom: max(18px, env(safe-area-inset-bottom, 0px));
+  left: max(34px, env(safe-area-inset-left, 0px));
   display: grid;
   grid-template-columns: minmax(230px, 1fr) minmax(280px, 390px) minmax(230px, 1fr);
   align-items: end;
   gap: 32px;
+  pointer-events: none;
+}
+
+.bottom-ui > * {
+  pointer-events: none;
+}
+
+.bottom-ui .next-button {
+  pointer-events: auto;
 }
 
 .instruction-block {
@@ -484,12 +519,14 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 21px;
+  min-height: 44px;
   padding: 7px 8px 7px 18px;
   border: 1px solid rgba(20, 22, 19, 0.18);
   border-radius: 999px;
   background: var(--ink);
   color: white;
   cursor: pointer;
+  touch-action: manipulation;
   box-shadow: 0 14px 28px rgba(20, 22, 19, 0.18);
   animation: nextIn 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
   transition: transform 180ms ease, box-shadow 180ms ease;
@@ -573,25 +610,47 @@ canvas:focus-visible {
   outline-offset: 4px;
 }
 
-@media (max-width: 900px) {
+.for-touch {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .for-mouse {
+    display: none;
+  }
+
+  .for-touch {
+    display: inline;
+  }
+}
+
+@media (hover: none) {
+  .sound-toggle:hover {
+    opacity: 1;
+  }
+
+  .next-button:hover {
+    transform: none;
+  }
+}
+
+@media (max-width: 900px), (hover: none) and (pointer: coarse) {
   .topbar {
-    padding: 20px 22px;
+    grid-template-columns: 1fr 1fr;
+    padding: max(10px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 8px max(16px, env(safe-area-inset-left, 0px));
   }
 
   .topbar-meta {
     display: none;
   }
 
-  .topbar {
-    grid-template-columns: 1fr 1fr;
-  }
-
   .challenge-rail {
-    top: 77px;
-    right: 22px;
-    left: auto;
+    top: calc(env(safe-area-inset-top, 0px) + 52px);
+    left: 50%;
+    right: auto;
     flex-direction: row;
-    transform: none;
+    transform: translateX(-50%);
+    gap: 14px;
   }
 
   .rail-step {
@@ -607,41 +666,59 @@ canvas:focus-visible {
   }
 
   .bottom-ui {
-    right: 22px;
-    bottom: 20px;
-    left: 22px;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
+    right: max(16px, env(safe-area-inset-right, 0px));
+    bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    left: max(16px, env(safe-area-inset-left, 0px));
+    grid-template-columns: 1fr;
+    gap: 10px;
   }
 
   .instruction-block {
+    display: flex;
+  }
+
+  .instruction-block div > span {
     display: none;
   }
 
-  .readout {
+  .readout,
+  .next-slot,
+  .instruction-block {
     grid-column: 1;
   }
 
   .next-slot {
-    grid-column: 2;
+    justify-content: stretch;
+  }
+
+  .next-button {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .scene-copy {
-    top: 15vh;
+    top: calc(env(safe-area-inset-top, 0px) + 72px);
+    padding: 0 16px;
+  }
+
+  .challenge-1 .scene-copy {
+    top: calc(env(safe-area-inset-top, 0px) + 72px);
   }
 
   .scene-copy h1 {
-    font-size: clamp(54px, 13vw, 94px);
+    font-size: clamp(40px, 12vw, 72px);
+    line-height: 0.84;
+  }
+
+  .eyebrow {
+    font-size: 7px;
+    margin-bottom: 8px;
   }
 }
 
 @media (max-width: 580px) {
   .experience::before {
     inset: 18vh -18vw 18vh;
-  }
-
-  .topbar {
-    padding: 17px 16px;
   }
 
   .brand {
@@ -655,67 +732,88 @@ canvas:focus-visible {
   }
 
   .sound-toggle {
-    font-size: 7px;
+    font-size: 8px;
+    letter-spacing: 0.08em;
   }
 
   .challenge-rail {
-    top: 64px;
-    right: 16px;
-  }
-
-  .scene-copy {
-    top: 14vh;
-    padding: 0 16px;
-  }
-
-  .eyebrow {
-    margin-bottom: 10px;
-    font-size: 7px;
-  }
-
-  .scene-copy h1 {
-    font-size: clamp(48px, 16.8vw, 76px);
-    line-height: 0.84;
+    top: calc(env(safe-area-inset-top, 0px) + 48px);
   }
 
   .scene-number {
-    font-size: 83vw;
+    font-size: 72vw;
   }
 
-  .bottom-ui {
-    right: 16px;
-    bottom: 15px;
-    left: 16px;
-    grid-template-columns: minmax(120px, 1fr) auto;
-    gap: 14px;
+  .scene-copy h1 {
+    font-size: clamp(36px, 14vw, 56px);
+  }
+
+  .instruction-icon {
+    width: 28px;
+    height: 28px;
+    flex-basis: 28px;
+    font-size: 13px;
   }
 
   .readout-head {
     gap: 10px;
-    font-size: 6px;
+    font-size: 7px;
   }
 
   .completion-target {
-    max-width: 86px;
-    font-size: 6px;
-    line-height: 1.5;
-    text-align: right;
-  }
-
-  .next-button {
-    gap: 10px;
-    padding-left: 13px;
+    font-size: 7px;
+    line-height: 1.45;
+    text-align: left;
+    max-width: none;
   }
 
   .next-button span {
-    max-width: 70px;
-    font-size: 6px;
-    line-height: 1.35;
+    max-width: none;
+    font-size: 8px;
   }
 
   .next-button i {
-    width: 31px;
-    height: 31px;
+    width: 32px;
+    height: 32px;
+  }
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+  .challenge-rail,
+  .eyebrow,
+  .instruction-block,
+  .scene-number,
+  .experience::before,
+  .experience::after {
+    display: none;
+  }
+
+  .scene-copy {
+    top: max(8px, env(safe-area-inset-top, 0px));
+  }
+
+  .scene-copy h1 {
+    font-size: clamp(28px, 8vh, 40px);
+  }
+
+  .bottom-ui {
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 12px;
+    bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .readout {
+    grid-column: 1;
+  }
+
+  .next-slot {
+    grid-column: 2;
+    min-height: 0;
+  }
+
+  .next-button {
+    width: auto;
   }
 }
 

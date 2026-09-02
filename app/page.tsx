@@ -248,6 +248,9 @@ const challengeContent = {
     lead: "OPEN",
     tail: "IT.",
     instruction: "CLICK THE RIND TO PUNCH A HOLE",
+    instructionTouch: "TAP THE RIND TO PUNCH A HOLE",
+    hint: "CLICK TO PIERCE · DEEP HOLES, NOT A WIDE BLAST",
+    hintTouch: "TAP TO PIERCE · DEEP HOLES, NOT A WIDE BLAST",
   },
   2: {
     index: "02",
@@ -255,6 +258,9 @@ const challengeContent = {
     lead: "BEND",
     tail: "IT.",
     instruction: "GRAB THE REBAR · PULL IT UP",
+    instructionTouch: "DRAG THE REBAR UP",
+    hint: "BEND · WRAP THE REBAR AROUND HIS ARM",
+    hintTouch: "HOLD AND DRAG UP · WRAP THE REBAR",
   },
   3: {
     index: "03",
@@ -262,6 +268,9 @@ const challengeContent = {
     lead: "LIFT",
     tail: "IT.",
     instruction: "GRAB THE REAR · PULL UP",
+    instructionTouch: "DRAG THE REAR UP",
+    hint: "ELMIN LIFTS · SUSPENSION FOLLOWS",
+    hintTouch: "HOLD THE RING · DRAG UP TO LIFT",
   },
   4: {
     index: "04",
@@ -269,6 +278,9 @@ const challengeContent = {
     lead: "DRIVE",
     tail: "IT.",
     instruction: "PUNCH THE PLATE TO DRIVE THE ROD",
+    instructionTouch: "TAP THE PLATE TO DRIVE THE ROD",
+    hint: "HAMMER THE ROD · PUNCH THROUGH THREE BOXES",
+    hintTouch: "TAP THE PLATE · DRIVE THROUGH THREE BOXES",
   },
 } as const;
 
@@ -291,6 +303,23 @@ function useReducedMotion() {
   return reduced;
 }
 
+function useMobileExperience() {
+  const [mobile, setMobile] = useState(false);
+  useEffect(() => {
+    const coarse = window.matchMedia("(pointer: coarse)");
+    const narrow = window.matchMedia("(max-width: 900px)");
+    const update = () => setMobile(coarse.matches || narrow.matches);
+    update();
+    coarse.addEventListener("change", update);
+    narrow.addEventListener("change", update);
+    return () => {
+      coarse.removeEventListener("change", update);
+      narrow.removeEventListener("change", update);
+    };
+  }, []);
+  return mobile;
+}
+
 export default function Home() {
   const [challenge, setChallenge] = useState<ChallengeNumber>(1);
   const [progress, setProgress] = useState(0);
@@ -298,6 +327,7 @@ export default function Home() {
   const [completed, setCompleted] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [transitioning, setTransitioning] = useState(false);
+  const [sceneReady, setSceneReady] = useState(false);
   const completionRef = useRef(false);
   const transitionTimers = useRef<number[]>([]);
   const realVoiceRef = useRef<HTMLAudioElement | null>(null);
@@ -307,6 +337,7 @@ export default function Home() {
   const spikeClipPlayed = useRef(false);
   const bendClipPlayed = useRef(false);
   const reducedMotion = useReducedMotion();
+  const mobile = useMobileExperience();
   const content = challengeContent[challenge];
 
   useEffect(
@@ -354,8 +385,19 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const unlock = () => {
+      audioContext();
+    };
+    window.addEventListener("pointerdown", unlock, { once: true });
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, []);
+
+  useEffect(() => {
     spikeClipPlayed.current = false;
     bendClipPlayed.current = false;
+    setSceneReady(false);
+    const fallback = window.setTimeout(() => setSceneReady(true), 2800);
+    return () => window.clearTimeout(fallback);
   }, [challenge]);
 
   const playRealVoiceOnce = useCallback(() => {
@@ -464,7 +506,7 @@ export default function Home() {
   const progressValue = progress;
 
   return (
-    <main className={`experience challenge-${challenge} ${transitioning ? "is-transitioning" : ""}`}>
+    <main className={`experience challenge-${challenge}${transitioning ? " is-transitioning" : ""}${mobile ? " is-mobile" : ""}`}>
       <div className="ambient-orb ambient-orb-a" />
       <div className="ambient-orb ambient-orb-b" />
       <div className="grain" />
@@ -481,6 +523,7 @@ export default function Home() {
           type="button"
           className="sound-toggle"
           aria-pressed={soundEnabled}
+          aria-label={soundEnabled ? "Mute sound" : "Unmute sound"}
           onClick={() => setSoundEnabled((current) => {
             if (current && realVoiceRef.current) {
               realVoiceRef.current.pause();
@@ -536,11 +579,14 @@ export default function Home() {
           <ChallengeCanvas
             challenge={challenge}
             reducedMotion={reducedMotion}
+            mobile={mobile}
             onProgress={handleProgress}
             onComplete={handleComplete}
             onFeedback={feedback}
             onObjectTouch={handleObjectTouch}
+            onReady={() => setSceneReady(true)}
           />
+          {!sceneReady && <div className="canvas-loading" aria-hidden="true" />}
         </div>
 
         <div className="interaction-cursor" aria-hidden="true">
@@ -554,8 +600,14 @@ export default function Home() {
             {challenge === 1 ? "＋" : challenge === 4 ? "↓" : "↟"}
           </span>
           <div>
-            <p>{content.instruction}</p>
-            <span>{challenge === 1 ? "CLICK TO PIERCE · DEEP HOLES, NOT A WIDE BLAST" : challenge === 2 ? "BEND · WRAP THE REBAR AROUND HIS ARM" : challenge === 4 ? "HAMMER THE ROD · PUNCH THROUGH THREE BOXES" : "ELMIN LIFTS · SUSPENSION FOLLOWS"}</span>
+            <p>
+              <span className="for-mouse">{content.instruction}</span>
+              <span className="for-touch">{content.instructionTouch}</span>
+            </p>
+            <span>
+              <span className="for-mouse">{content.hint}</span>
+              <span className="for-touch">{content.hintTouch}</span>
+            </span>
           </div>
         </div>
 

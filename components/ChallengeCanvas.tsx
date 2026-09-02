@@ -1,6 +1,6 @@
 "use client";
 
-import { ContactShadows, RoundedBox, Sparkles } from "@react-three/drei";
+import { ContactShadows, Preload, RoundedBox, Sparkles } from "@react-three/drei";
 import { Canvas, ThreeEvent, useFrame, useThree } from "@react-three/fiber";
 import { Bloom, EffectComposer, SMAA, Vignette } from "@react-three/postprocessing";
 import {
@@ -21,10 +21,12 @@ export type FeedbackKind = "fruit" | "metal" | "car" | "car-strain";
 type ChallengeCanvasProps = {
   challenge: ChallengeNumber;
   reducedMotion: boolean;
+  mobile?: boolean;
   onProgress: (progress: number, detail?: number) => void;
   onComplete: () => void;
   onFeedback: (kind: FeedbackKind, intensity: number) => void;
   onObjectTouch: () => void;
+  onReady?: () => void;
 };
 
 type Damage = {
@@ -50,6 +52,39 @@ function clamp(value: number, min = 0, max = 1) {
   return Math.min(max, Math.max(min, value));
 }
 
+function dragTravelScale() {
+  if (typeof window === "undefined") return 300;
+  return Math.max(210, Math.min(380, window.innerHeight * 0.36));
+}
+
+function attachVerticalDrag(
+  pointerId: number,
+  startY: number,
+  onMove: (travel: number) => void,
+  onEnd: () => void,
+) {
+  const move = (event: PointerEvent) => {
+    if (event.pointerId !== pointerId) return;
+    event.preventDefault();
+    onMove(startY - event.clientY);
+  };
+  const end = (event: PointerEvent) => {
+    if (event.pointerId !== pointerId) return;
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+    onEnd();
+  };
+  window.addEventListener("pointermove", move, { passive: false });
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+  return () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+  };
+}
+
 function smoothstep(edge0: number, edge1: number, value: number) {
   const t = clamp((value - edge0) / (edge1 - edge0));
   return t * t * (3 - 2 * t);
@@ -64,8 +99,8 @@ function seededRandom(seed: number) {
 }
 
 function createWatermelonTextures() {
-  const width = 1024;
-  const height = 512;
+  const width = 512;
+  const height = 256;
   const colorCanvas = document.createElement("canvas");
   const bumpCanvas = document.createElement("canvas");
   colorCanvas.width = bumpCanvas.width = width;
@@ -117,7 +152,7 @@ function createWatermelonTextures() {
   const random = seededRandom(731);
   color.globalAlpha = 1;
   bump.globalAlpha = 1;
-  for (let i = 0; i < 2400; i += 1) {
+  for (let i = 0; i < 720; i += 1) {
     const x = random() * width;
     const y = random() * height;
     const radius = random() * 1.3 + 0.15;
@@ -132,15 +167,19 @@ function createWatermelonTextures() {
   const map = new THREE.CanvasTexture(colorCanvas);
   map.colorSpace = THREE.SRGBColorSpace;
   map.wrapS = THREE.RepeatWrapping;
+  map.generateMipmaps = false;
+  map.minFilter = THREE.LinearFilter;
   const bumpMap = new THREE.CanvasTexture(bumpCanvas);
   bumpMap.wrapS = THREE.RepeatWrapping;
+  bumpMap.generateMipmaps = false;
+  bumpMap.minFilter = THREE.LinearFilter;
   return { map, bumpMap };
 }
 
 function createFleshTexture() {
   const canvas = document.createElement("canvas");
-  canvas.width = 768;
-  canvas.height = 384;
+  canvas.width = 512;
+  canvas.height = 256;
   const context = canvas.getContext("2d")!;
   const gradient = context.createRadialGradient(250, 90, 10, 360, 180, 470);
   gradient.addColorStop(0, "#ff756f");
@@ -165,6 +204,8 @@ function createFleshTexture() {
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = THREE.RepeatWrapping;
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
   return texture;
 }
 
@@ -279,7 +320,7 @@ function WatermelonShellMaterial({
   damages: Damage[];
   clipNormal: [number, number, number] | null;
 }) {
-  const textures = useMemo(createWatermelonTextures, []);
+  const textures = useMemo(getWatermelonTextures, []);
   const material = useMemo(() => {
     const next = new THREE.MeshPhysicalMaterial({
       map: textures.map,
@@ -304,14 +345,7 @@ function WatermelonShellMaterial({
     syncDamageUniforms(material, damages, 1, 1, clipNormal);
   });
 
-  useEffect(
-    () => () => {
-      material.dispose();
-      textures.map.dispose();
-      textures.bumpMap.dispose();
-    },
-    [material, textures],
-  );
+  useEffect(() => () => material.dispose(), [material]);
 
   return <primitive object={material} attach="material" />;
 }
@@ -425,7 +459,7 @@ function FallingWatermelonHalf({
   fleshTexture: THREE.CanvasTexture;
   reducedMotion: boolean;
 }) {
-  const textures = useMemo(createWatermelonTextures, []);
+  const textures = useMemo(getWatermelonTextures, []);
   const group = useRef<THREE.Group>(null);
   const born = useRef<number | null>(null);
   const [gone, setGone] = useState(false);
@@ -443,14 +477,6 @@ function FallingWatermelonHalf({
     const timeout = window.setTimeout(() => setGone(true), 5000);
     return () => window.clearTimeout(timeout);
   }, []);
-
-  useEffect(
-    () => () => {
-      textures.map.dispose();
-      textures.bumpMap.dispose();
-    },
-    [textures],
-  );
 
   useFrame((state, delta) => {
     if (!group.current) return;
@@ -484,7 +510,7 @@ function FallingWatermelonHalf({
       <group quaternion={align}>
         <group>
           <mesh scale={[0.86, 0.9, 0.83]} castShadow>
-            <sphereGeometry args={[1, 64, 40, 0, Math.PI * 2, 0, Math.PI / 2]} />
+            <sphereGeometry args={[1, 40, 24, 0, Math.PI * 2, 0, Math.PI / 2]} />
             <meshPhysicalMaterial
               map={textures.map}
               bumpMap={textures.bumpMap}
@@ -496,7 +522,7 @@ function FallingWatermelonHalf({
             />
           </mesh>
           <mesh scale={[0.78, 0.82, 0.75]} castShadow>
-            <sphereGeometry args={[1, 48, 28, 0, Math.PI * 2, 0, Math.PI / 2]} />
+            <sphereGeometry args={[1, 40, 24, 0, Math.PI * 2, 0, Math.PI / 2]} />
             <meshPhysicalMaterial map={fleshTexture} color="#e04752" roughness={0.56} />
           </mesh>
           <mesh rotation={[Math.PI / 2, 0, 0]} scale={[0.86, 0.83, 1]}>
@@ -557,8 +583,8 @@ function WatermelonFleshMaterial({
 
 function createCourtyardTexture() {
   const canvas = document.createElement("canvas");
-  canvas.width = 1024;
-  canvas.height = 512;
+  canvas.width = 512;
+  canvas.height = 256;
   const context = canvas.getContext("2d")!;
   const gradient = context.createLinearGradient(0, 0, 0, canvas.height);
   gradient.addColorStop(0, "#b9774f");
@@ -590,13 +616,33 @@ function createCourtyardTexture() {
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.anisotropy = 2;
   return texture;
 }
 
+let watermelonTextureCache: ReturnType<typeof createWatermelonTextures> | null = null;
+let fleshTextureCache: THREE.CanvasTexture | null = null;
+let courtyardTextureCache: THREE.CanvasTexture | null = null;
+
+function getWatermelonTextures() {
+  watermelonTextureCache ??= createWatermelonTextures();
+  return watermelonTextureCache;
+}
+
+function getFleshTexture() {
+  fleshTextureCache ??= createFleshTexture();
+  return fleshTextureCache;
+}
+
+function getCourtyardTexture() {
+  courtyardTextureCache ??= createCourtyardTexture();
+  return courtyardTextureCache;
+}
+
 function CourtyardSet() {
-  const wallTexture = useMemo(createCourtyardTexture, []);
-  useEffect(() => () => wallTexture.dispose(), [wallTexture]);
+  const wallTexture = useMemo(getCourtyardTexture, []);
 
   return (
     <group>
@@ -641,7 +687,7 @@ function CourtyardSet() {
 function Muscle({ length, radius, color = "#b97857" }: { length: number; radius: number; color?: string }) {
   return (
     <mesh castShadow>
-      <capsuleGeometry args={[radius, length, 10, 20]} />
+      <capsuleGeometry args={[radius, length, 6, 12]} />
       <meshStandardMaterial color={color} roughness={0.55} />
     </mesh>
   );
@@ -735,7 +781,7 @@ function StrongmanCharacter({
     <group position={position} scale={scale} rotation-y={rotationY}>
     <group ref={root}>
       <group ref={torso}>
-        <RoundedBox args={[1.48, 1.28, 0.68]} radius={0.29} smoothness={5} position={[0, 0.37, 0]} castShadow>
+        <RoundedBox args={[1.48, 1.28, 0.68]} radius={0.29} smoothness={3} position={[0, 0.37, 0]} castShadow>
           <meshStandardMaterial color="#111312" roughness={0.66} />
         </RoundedBox>
         <mesh position={[0, 0.72, 0.24]} scale={[0.72, 0.42, 0.3]} castShadow>
@@ -921,13 +967,12 @@ function WatermelonChallenge({
   const [damages, setDamages] = useState<Damage[]>([]);
   const [splitNormal, setSplitNormal] = useState<[number, number, number] | null>(null);
   const [bursts, setBursts] = useState<ImpactBurstSpec[]>([]);
-  const fleshTexture = useMemo(createFleshTexture, []);
+  const fleshTexture = useMemo(getFleshTexture, []);
   const cutFacing = useMemo(
     () => (splitNormal ? new THREE.Quaternion().setFromUnitVectors(FORWARD, new THREE.Vector3(...splitNormal)) : null),
     [splitNormal],
   );
 
-  useEffect(() => () => fleshTexture.dispose(), [fleshTexture]);
   useEffect(() => {
     document.body.style.cursor = hovered ? "crosshair" : "default";
     return () => {
@@ -1066,6 +1111,7 @@ function WatermelonChallenge({
 
   const onPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
+    event.nativeEvent.preventDefault();
     punchAt(event);
   }, [punchAt]);
 
@@ -1084,8 +1130,8 @@ function WatermelonChallenge({
           <sphereGeometry
             args={
               splitNormal
-                ? [0.91, 72, 40, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2]
-                : [0.91, 72, 72]
+                ? [0.91, 40, 24, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2]
+                : [0.91, 40, 40]
             }
           />
           <WatermelonFleshMaterial damages={damages} map={fleshTexture} clipNormal={splitNormal} />
@@ -1102,8 +1148,8 @@ function WatermelonChallenge({
           <sphereGeometry
             args={
               splitNormal
-                ? [1, 80, 40, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2]
-                : [1, 80, 80]
+                ? [1, 48, 24, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2]
+                : [1, 48, 48]
             }
           />
           <WatermelonShellMaterial damages={damages} clipNormal={splitNormal} />
@@ -1186,13 +1232,13 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onO
   const [bend, setBend] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [sparks, setSparks] = useState<ImpactBurstSpec[]>([]);
-  const dragStart = useRef({ y: 0, bend: 0 });
   const permanent = useRef(0);
   const targetBend = useRef(0);
   const visualBend = useRef(0);
   const draggingRef = useRef(false);
   const completionSent = useRef(false);
   const lastSpark = useRef(0);
+  const dragCleanup = useRef<(() => void) | null>(null);
   const barCount = 48;
   const heat = smoothstep(0.28, 1, bend);
   const metalColor = useMemo(() => new THREE.Color("#707575").lerp(new THREE.Color("#ffb056"), heat), [heat]);
@@ -1204,6 +1250,8 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onO
       document.body.style.cursor = "default";
     };
   }, [dragging]);
+
+  useEffect(() => () => dragCleanup.current?.(), []);
 
   useFrame((state, delta) => {
     visualBend.current = THREE.MathUtils.damp(
@@ -1254,41 +1302,43 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onO
 
   const onPointerDown = (event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
-    (event.target as Element).setPointerCapture?.(event.pointerId);
+    event.nativeEvent.preventDefault();
     onObjectTouch();
-    dragStart.current = { y: event.nativeEvent.clientY, bend: targetBend.current };
+    dragCleanup.current?.();
     draggingRef.current = true;
     setDragging(true);
     onFeedback("metal", 0.32);
     punchCamera(0.05);
-  };
-
-  const onPointerMove = (event: ThreeEvent<PointerEvent>) => {
-    if (!draggingRef.current) return;
-    event.stopPropagation();
-    const travel = dragStart.current.y - event.nativeEvent.clientY;
-    const resistance = travel <= 60 ? travel / 430 : 0.14 + (travel - 60) / 250;
-    const next = clamp(Math.max(permanent.current, dragStart.current.bend + resistance));
-    targetBend.current = next;
-    setBend(next);
-    onProgress(next);
-    if (next > 0.28 && Math.floor(next * 20) !== Math.floor(bend * 20)) onFeedback("metal", next);
-    if (next >= 0.88 && !completionSent.current) {
-      completionSent.current = true;
-      permanent.current = next;
-      onComplete();
-    }
-  };
-
-  const onPointerUp = (event: ThreeEvent<PointerEvent>) => {
-    if (!draggingRef.current) return;
-    (event.target as Element).releasePointerCapture?.(event.pointerId);
-    draggingRef.current = false;
-    setDragging(false);
-    permanent.current = Math.max(permanent.current, targetBend.current > 0.62 ? targetBend.current : targetBend.current * 0.3);
-    targetBend.current = permanent.current;
-    setBend(permanent.current);
-    onProgress(permanent.current);
+    const startBend = targetBend.current;
+    const scale = dragTravelScale();
+    dragCleanup.current = attachVerticalDrag(
+      event.pointerId,
+      event.nativeEvent.clientY,
+      (travel) => {
+        if (!draggingRef.current) return;
+        const resistance = travel <= 60 ? travel / (scale * 1.35) : 0.14 + (travel - 60) / (scale * 0.78);
+        const next = clamp(Math.max(permanent.current, startBend + resistance));
+        const prev = targetBend.current;
+        targetBend.current = next;
+        setBend(next);
+        onProgress(next);
+        if (next > 0.28 && Math.floor(next * 20) !== Math.floor(prev * 20)) onFeedback("metal", next);
+        if (next >= 0.88 && !completionSent.current) {
+          completionSent.current = true;
+          permanent.current = next;
+          onComplete();
+        }
+      },
+      () => {
+        if (!draggingRef.current) return;
+        draggingRef.current = false;
+        setDragging(false);
+        permanent.current = Math.max(permanent.current, targetBend.current > 0.62 ? targetBend.current : targetBend.current * 0.3);
+        targetBend.current = permanent.current;
+        setBend(permanent.current);
+        onProgress(permanent.current);
+      },
+    );
   };
 
   return (
@@ -1343,12 +1393,9 @@ function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onO
       <group ref={handle} position={[0, 0, 0.17]}>
         <mesh
           onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
           castShadow
         >
-          <sphereGeometry args={[0.32, 30, 30]} />
+          <sphereGeometry args={[0.52, 24, 24]} />
           <meshPhysicalMaterial
             color={dragging ? "#dfff37" : "#151817"}
             metalness={0.35}
@@ -1458,12 +1505,10 @@ type CarModelProps = {
   spin: number;
   bounce: number;
   onPointerDown: (event: ThreeEvent<PointerEvent>) => void;
-  onPointerMove: (event: ThreeEvent<PointerEvent>) => void;
-  onPointerUp: (event: ThreeEvent<PointerEvent>) => void;
   dragging: boolean;
 };
 
-function CarModel({ lift, spin, bounce, onPointerDown, onPointerMove, onPointerUp, dragging }: CarModelProps) {
+function CarModel({ lift, spin, bounce, onPointerDown, dragging }: CarModelProps) {
   const shapes = useMemo(createCarShapes, []);
   const angle = 0.015 + smoothstep(0.08, 1, lift) * 0.31;
   const axleRise = Math.sin(angle) * 2.7;
@@ -1569,13 +1614,8 @@ function CarModel({ lift, spin, bounce, onPointerDown, onPointerMove, onPointerU
         <Wheel position={[1.35, rearWheelY, -0.08]} far spin={spin} />
 
         <group position={[1.92, 0.08, 1.06]}>
-          <mesh
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
-          >
-            <sphereGeometry args={[0.34, 24, 24]} />
+          <mesh onPointerDown={onPointerDown}>
+            <sphereGeometry args={[0.56, 20, 20]} />
             <meshBasicMaterial transparent opacity={0.001} depthWrite={false} />
           </mesh>
           <mesh rotation={[Math.PI / 2, 0, 0]}>
@@ -1598,7 +1638,6 @@ function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onObj
   const [bounce, setBounce] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [dust, setDust] = useState<ImpactBurstSpec[]>([]);
-  const dragStart = useRef({ y: 0, lift: 0 });
   const completionSent = useRef(false);
   const targetLift = useRef(0);
   const visualLift = useRef(0);
@@ -1606,6 +1645,7 @@ function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onObj
   const dustSent = useRef(false);
   const spinRef = useRef(0);
   const bounceRef = useRef(0);
+  const dragCleanup = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     document.body.style.cursor = dragging ? "grabbing" : "default";
@@ -1613,6 +1653,8 @@ function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onObj
       document.body.style.cursor = "default";
     };
   }, [dragging]);
+
+  useEffect(() => () => dragCleanup.current?.(), []);
 
   useFrame((state, delta) => {
     visualLift.current = THREE.MathUtils.damp(
@@ -1647,41 +1689,43 @@ function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onObj
 
   const onPointerDown = (event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
-    (event.target as Element).setPointerCapture?.(event.pointerId);
+    event.nativeEvent.preventDefault();
     onObjectTouch();
-    dragStart.current = { y: event.nativeEvent.clientY, lift: targetLift.current };
+    dragCleanup.current?.();
     draggingRef.current = true;
     setDragging(true);
     onFeedback("car", 0.28);
     onFeedback("car-strain", Math.max(0.25, targetLift.current));
     punchCamera(0.04);
-  };
-
-  const onPointerMove = (event: ThreeEvent<PointerEvent>) => {
-    if (!draggingRef.current) return;
-    event.stopPropagation();
-    const travel = dragStart.current.y - event.nativeEvent.clientY;
-    const next = clamp(dragStart.current.lift + travel / 300);
-    targetLift.current = next;
-    onProgress(next);
-    onFeedback("car-strain", 0.2 + next * 0.7);
-    if (Math.floor(next * 14) !== Math.floor(lift * 14)) onFeedback("car", next);
-    if (next >= 0.9 && !completionSent.current) {
-      completionSent.current = true;
-      onComplete();
-      punchCamera(0.16);
-    }
-  };
-
-  const onPointerUp = (event: ThreeEvent<PointerEvent>) => {
-    if (!draggingRef.current) return;
-    (event.target as Element).releasePointerCapture?.(event.pointerId);
-    draggingRef.current = false;
-    setDragging(false);
-    onFeedback("car-strain", 0);
-    const settled = targetLift.current > 0.55 ? targetLift.current : targetLift.current * 0.38;
-    targetLift.current = settled;
-    onProgress(settled);
+    const startLift = targetLift.current;
+    const scale = dragTravelScale();
+    dragCleanup.current = attachVerticalDrag(
+      event.pointerId,
+      event.nativeEvent.clientY,
+      (travel) => {
+        if (!draggingRef.current) return;
+        const next = clamp(startLift + travel / scale);
+        const prev = targetLift.current;
+        targetLift.current = next;
+        onProgress(next);
+        onFeedback("car-strain", 0.2 + next * 0.7);
+        if (Math.floor(next * 14) !== Math.floor(prev * 14)) onFeedback("car", next);
+        if (next >= 0.9 && !completionSent.current) {
+          completionSent.current = true;
+          onComplete();
+          punchCamera(0.16);
+        }
+      },
+      () => {
+        if (!draggingRef.current) return;
+        draggingRef.current = false;
+        setDragging(false);
+        onFeedback("car-strain", 0);
+        const settled = targetLift.current > 0.55 ? targetLift.current : targetLift.current * 0.38;
+        targetLift.current = settled;
+        onProgress(settled);
+      },
+    );
   };
 
   return (
@@ -1703,8 +1747,6 @@ function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback, onObj
         bounce={bounce}
         dragging={dragging}
         onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
       />
       {dust.map((item) => (
         <ImpactBurst key={item.id} burst={item} reducedMotion={reducedMotion} floorY={-1.08} />
@@ -1846,6 +1888,7 @@ function SpikeChallenge({
 
   const punchRod = useCallback((event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
+    event.nativeEvent.preventDefault();
     const now = performance.now();
     if (now - lastHitAt.current < 90) return;
     lastHitAt.current = now;
@@ -1954,6 +1997,10 @@ function SpikeChallenge({
           <cylinderGeometry args={[0.155, 0.175, 0.07, 8]} />
           <meshStandardMaterial color="#6a7170" metalness={0.78} roughness={0.32} />
         </mesh>
+        <mesh position={[0, 0.06, 0]} onPointerDown={punchRod}>
+          <cylinderGeometry args={[0.46, 0.46, 0.22, 16]} />
+          <meshBasicMaterial transparent opacity={0.001} depthWrite={false} />
+        </mesh>
         {[0, 1, 2, 3, 4].map((index) => (
           <mesh key={index} position={[Math.cos(index * 1.15) * 0.04, 0.055, Math.sin(index * 1.15) * 0.03]} rotation={[0.1, index, 0.2]} castShadow>
             <boxGeometry args={[0.08, 0.028, 0.035]} />
@@ -1982,8 +2029,16 @@ function SpikeChallenge({
   );
 }
 
-function CameraRig({ challenge, reducedMotion }: { challenge: ChallengeNumber; reducedMotion: boolean }) {
-  const { camera } = useThree();
+function CameraRig({
+  challenge,
+  reducedMotion,
+  mobile,
+}: {
+  challenge: ChallengeNumber;
+  reducedMotion: boolean;
+  mobile?: boolean;
+}) {
+  const { camera, size } = useThree();
   const target = useMemo(() => {
     if (challenge === 1) return new THREE.Vector3(0, 0.32, 7.15);
     if (challenge === 2) return new THREE.Vector3(0, 0.25, 7.05);
@@ -1992,14 +2047,29 @@ function CameraRig({ challenge, reducedMotion }: { challenge: ChallengeNumber; r
   }, [challenge]);
 
   useFrame((state, delta) => {
+    const portrait = size.height > size.width;
+    const fov = portrait ? (size.height / size.width > 1.7 ? 46 : 42) : 35;
+    if (Math.abs(camera.fov - fov) > 0.08) {
+      camera.fov = fov;
+      camera.updateProjectionMatrix();
+    }
+    const framed = target.clone();
+    if (portrait) {
+      framed.z *= 0.9;
+      framed.y -= 0.18;
+    }
     cameraKick.current = THREE.MathUtils.damp(cameraKick.current, 0, 9, delta);
-    camera.position.lerp(target, reducedMotion ? 1 : 1 - Math.exp(-delta * 3.6));
-    camera.lookAt(0, challenge === 3 ? -0.08 : challenge === 4 ? 0.08 : -0.12, 0);
-    if (!reducedMotion) {
+    camera.position.lerp(framed, reducedMotion ? 1 : 1 - Math.exp(-delta * 3.6));
+    camera.lookAt(0, challenge === 3 ? -0.16 : challenge === 4 ? 0.02 : -0.18, 0);
+    if (!reducedMotion && !mobile && size.width >= 900) {
       const pointerAmount = challenge === 1 ? 0.035 : 0.07;
       const kick = cameraKick.current;
       camera.position.x += state.pointer.x * pointerAmount * delta;
       camera.position.y += state.pointer.y * pointerAmount * 0.45 * delta;
+      camera.position.x += Math.sin(state.clock.elapsedTime * 54) * kick * 0.08;
+      camera.position.y += Math.cos(state.clock.elapsedTime * 47) * kick * 0.05;
+    } else if (!reducedMotion) {
+      const kick = cameraKick.current;
       camera.position.x += Math.sin(state.clock.elapsedTime * 54) * kick * 0.08;
       camera.position.y += Math.cos(state.clock.elapsedTime * 47) * kick * 0.05;
     }
@@ -2014,13 +2084,22 @@ function ResponsiveStage({
   challenge: ChallengeNumber;
   children: React.ReactNode;
 }) {
-  const { viewport } = useThree();
+  const { viewport, size } = useThree();
+  const portrait = size.height > size.width;
   const targetWidth = challenge === 3 ? 6.5 : challenge === 4 ? 6.1 : challenge === 2 ? 6.25 : 5.25;
-  const scale = Math.min(1, viewport.width / targetWidth);
-  return <group scale={scale}>{children}</group>;
+  const fit = viewport.width / (targetWidth * (portrait ? 0.86 : 1));
+  const scale = Math.min(portrait ? 1.08 : 1, fit);
+  return (
+    <group scale={scale} position={[0, portrait ? -0.32 : 0, 0]}>
+      {children}
+    </group>
+  );
 }
 
 function Studio({ reducedMotion }: { reducedMotion: boolean }) {
+  const { size } = useThree();
+  const compact = size.width < 900 || reducedMotion;
+  const shadowSize = compact ? 512 : 1024;
   return (
     <>
       <ambientLight intensity={1.1} />
@@ -2030,8 +2109,8 @@ function Studio({ reducedMotion }: { reducedMotion: boolean }) {
         position={[-3.8, 5.5, 4.5]}
         intensity={3.1}
         color="#fffdf4"
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        shadow-mapSize-width={shadowSize}
+        shadow-mapSize-height={shadowSize}
         shadow-bias={-0.0004}
       />
       <pointLight position={[4, 1.5, 3.5]} intensity={12} distance={9} color="#dfff8a" />
@@ -2042,7 +2121,7 @@ function Studio({ reducedMotion }: { reducedMotion: boolean }) {
         scale={8.5}
         blur={3.4}
         far={4.3}
-        resolution={reducedMotion ? 256 : 512}
+        resolution={compact ? 128 : 256}
         frames={1}
         color="#2c2824"
       />
@@ -2050,22 +2129,83 @@ function Studio({ reducedMotion }: { reducedMotion: boolean }) {
   );
 }
 
+function OptionalPostFx({ reducedMotion, ready }: { reducedMotion: boolean; ready: boolean }) {
+  const { size } = useThree();
+  if (!ready || size.width < 900) return null;
+  return (
+    <EffectComposer multisampling={0}>
+      <SMAA />
+      <Bloom
+        luminanceThreshold={0.92}
+        intensity={reducedMotion ? 0.08 : 0.16}
+        mipmapBlur
+        luminanceSmoothing={0.35}
+      />
+      <Vignette offset={0.32} darkness={0.22} />
+    </EffectComposer>
+  );
+}
+
+function SceneWarmup({
+  challenge,
+  onSceneWarm,
+  onReady,
+}: {
+  challenge: ChallengeNumber;
+  onSceneWarm: () => void;
+  onReady?: () => void;
+}) {
+  const { gl, scene, camera } = useThree();
+  const frames = useRef(0);
+
+  useLayoutEffect(() => {
+    frames.current = 0;
+  }, [challenge]);
+
+  useFrame(() => {
+    if (frames.current >= 8) return;
+    frames.current += 1;
+    if (frames.current === 1) {
+      try {
+        gl.compile(scene, camera);
+      } catch {
+        /* custom onBeforeCompile shaders finish on first draw */
+      }
+    }
+    if (frames.current === 3) onSceneWarm();
+    if (frames.current === 8) onReady?.();
+  });
+
+  return null;
+}
+
 export default function ChallengeCanvas({
   challenge,
   reducedMotion,
+  mobile = false,
   onProgress,
   onComplete,
   onFeedback,
   onObjectTouch,
+  onReady,
 }: ChallengeCanvasProps) {
+  const [postReady, setPostReady] = useState(false);
   const background = challenge === 1 || challenge === 4 ? "#e7ded2" : "#ecece5";
+
   return (
     <Canvas
       className="challenge-canvas"
-      dpr={[1, 1.7]}
+      dpr={[1, 1.2]}
       camera={{ fov: 35, near: 0.1, far: 60, position: [0, 0.3, 6.8] }}
-      gl={{ antialias: false, alpha: false, powerPreference: "high-performance" }}
+      gl={{
+        antialias: false,
+        alpha: false,
+        powerPreference: "high-performance",
+        stencil: false,
+      }}
       shadows
+      performance={{ min: 0.5, debounce: 200 }}
+      style={{ touchAction: "none", userSelect: "none" }}
       onCreated={({ gl }) => {
         gl.outputColorSpace = THREE.SRGBColorSpace;
         gl.toneMapping = THREE.ACESFilmicToneMapping;
@@ -2074,7 +2214,7 @@ export default function ChallengeCanvas({
       }}
     >
       <color attach="background" args={[background]} />
-      <CameraRig challenge={challenge} reducedMotion={reducedMotion} />
+      <CameraRig challenge={challenge} reducedMotion={reducedMotion} mobile={mobile} />
       <Studio reducedMotion={reducedMotion} />
       <ResponsiveStage challenge={challenge}>
         {challenge === 1 && (
@@ -2096,16 +2236,9 @@ export default function ChallengeCanvas({
           <SpikeChallenge reducedMotion={reducedMotion} onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} onObjectTouch={onObjectTouch} />
         )}
       </ResponsiveStage>
-      <EffectComposer multisampling={0}>
-        <SMAA />
-        <Bloom
-          luminanceThreshold={0.92}
-          intensity={reducedMotion ? 0.08 : 0.18}
-          mipmapBlur
-          luminanceSmoothing={0.35}
-        />
-        <Vignette offset={0.32} darkness={0.22} />
-      </EffectComposer>
+      <SceneWarmup challenge={challenge} onSceneWarm={() => setPostReady(true)} onReady={onReady} />
+      <Preload all />
+      <OptionalPostFx reducedMotion={reducedMotion} ready={postReady} />
     </Canvas>
   );
 }
