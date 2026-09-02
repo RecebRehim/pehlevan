@@ -439,10 +439,18 @@ function StrongmanCharacter({
   pressure,
   burst,
   reducedMotion,
+  mode = "crush",
+  position = [0, -0.02, -0.58],
+  scale = 1,
+  rotationY = 0,
 }: {
   pressure: number;
   burst: boolean;
   reducedMotion: boolean;
+  mode?: "crush" | "bend" | "lift";
+  position?: [number, number, number];
+  scale?: number;
+  rotationY?: number;
 }) {
   const root = useRef<THREE.Group>(null);
   const torso = useRef<THREE.Group>(null);
@@ -462,8 +470,9 @@ function StrongmanCharacter({
     const recoil = burst && !reducedMotion ? Math.sin(burstAge * 21) * Math.exp(-burstAge * 5.5) * 0.045 : 0;
     const breath = reducedMotion ? 0 : Math.sin(state.clock.elapsedTime * 1.65) * 0.012;
     if (root.current) {
-      root.current.position.y = -0.02 + breath * 0.35 + recoil;
-      root.current.rotation.x = THREE.MathUtils.damp(root.current.rotation.x, -0.025 - squeeze * 0.11, 6, delta);
+      root.current.position.y = breath * 0.35 + recoil;
+      const lean = mode === "crush" ? -0.025 - squeeze * 0.11 : mode === "bend" ? -0.04 - squeeze * 0.16 : -0.08 - squeeze * 0.2;
+      root.current.rotation.x = THREE.MathUtils.damp(root.current.rotation.x, lean, 6, delta);
     }
     if (torso.current) torso.current.scale.set(1 + squeeze * 0.025, 1 + breath, 1 + squeeze * 0.055);
     if (head.current) {
@@ -471,10 +480,15 @@ function StrongmanCharacter({
       head.current.rotation.z = reducedMotion ? 0 : Math.sin(state.clock.elapsedTime * 0.65) * 0.012;
     }
     if (leftUpper.current && rightUpper.current && leftFore.current && rightFore.current) {
-      leftUpper.current.rotation.z = THREE.MathUtils.damp(leftUpper.current.rotation.z, -0.28 + squeeze * 0.16, 8, delta);
-      rightUpper.current.rotation.z = THREE.MathUtils.damp(rightUpper.current.rotation.z, 0.28 - squeeze * 0.16, 8, delta);
-      leftFore.current.rotation.z = THREE.MathUtils.damp(leftFore.current.rotation.z, 0.74 + squeeze * 0.3, 9, delta);
-      rightFore.current.rotation.z = THREE.MathUtils.damp(rightFore.current.rotation.z, -0.74 - squeeze * 0.3, 9, delta);
+      const upperZ = mode === "crush" ? -0.28 + squeeze * 0.16 : mode === "bend" ? -0.38 + squeeze * 0.26 : -0.52 + squeeze * 0.2;
+      const foreZ = mode === "crush" ? 0.74 + squeeze * 0.3 : mode === "bend" ? 0.54 + squeeze * 0.56 : 0.28 + squeeze * 0.25;
+      const armX = mode === "crush" ? -0.72 : mode === "bend" ? -0.58 - squeeze * 0.12 : -0.34 - squeeze * 0.22;
+      leftUpper.current.rotation.z = THREE.MathUtils.damp(leftUpper.current.rotation.z, upperZ, 8, delta);
+      rightUpper.current.rotation.z = THREE.MathUtils.damp(rightUpper.current.rotation.z, -upperZ, 8, delta);
+      leftFore.current.rotation.z = THREE.MathUtils.damp(leftFore.current.rotation.z, foreZ, 9, delta);
+      rightFore.current.rotation.z = THREE.MathUtils.damp(rightFore.current.rotation.z, -foreZ, 9, delta);
+      leftUpper.current.rotation.x = THREE.MathUtils.damp(leftUpper.current.rotation.x, armX, 8, delta);
+      rightUpper.current.rotation.x = THREE.MathUtils.damp(rightUpper.current.rotation.x, armX, 8, delta);
     }
   });
 
@@ -482,7 +496,8 @@ function StrongmanCharacter({
   const skinLight = "#c88965";
 
   return (
-    <group ref={root} position={[0, -0.02, -0.58]}>
+    <group position={position} scale={scale} rotation-y={rotationY}>
+    <group ref={root}>
       <group ref={torso}>
         <RoundedBox args={[1.48, 1.28, 0.68]} radius={0.29} smoothness={5} position={[0, 0.37, 0]} castShadow>
           <meshStandardMaterial color="#111312" roughness={0.66} />
@@ -583,6 +598,7 @@ function StrongmanCharacter({
           </mesh>
         </group>
       </group>
+    </group>
     </group>
   );
 }
@@ -847,13 +863,14 @@ type BarSegment = {
   length: number;
 };
 
-function makeBarSegments(bend: number) {
-  const count = 34;
+function makeBarSegments(bend: number, zOffset = 0) {
+  const count = 38;
   const points = Array.from({ length: count + 1 }, (_, index) => {
     const t = index / count;
-    const elastic = Math.pow(t, 2.15) * bend * 1.65;
-    const kink = Math.max(0, t - 0.58) * Math.max(0, bend - 0.56) * 1.6;
-    return new THREE.Vector3(-2.45 + t * 4.9, elastic + kink, Math.sin(t * Math.PI) * bend * 0.09);
+    const arch = Math.sin(t * Math.PI);
+    const elastic = arch * bend * 1.22;
+    const plasticKink = Math.pow(arch, 7) * Math.max(0, bend - 0.52) * 1.2;
+    return new THREE.Vector3(-2.28 + t * 4.56, elastic + plasticKink, zOffset + Math.sin(t * Math.PI * 2) * bend * 0.035);
   });
   return points.slice(0, -1).map((point, index): BarSegment => {
     const next = points[index + 1];
@@ -866,30 +883,32 @@ function makeBarSegments(bend: number) {
   });
 }
 
-function MetalChallenge({ onProgress, onComplete, onFeedback }: Omit<ChallengeCanvasProps, "challenge" | "reducedMotion">) {
-  const bar = useRef<THREE.InstancedMesh>(null);
+function MetalChallenge({ reducedMotion, onProgress, onComplete, onFeedback }: Omit<ChallengeCanvasProps, "challenge">) {
+  const frontBar = useRef<THREE.InstancedMesh>(null);
+  const backBar = useRef<THREE.InstancedMesh>(null);
   const rig = useRef<THREE.Group>(null);
   const [bend, setBend] = useState(0);
   const [dragging, setDragging] = useState(false);
   const dragStart = useRef({ y: 0, bend: 0 });
   const permanent = useRef(0);
   const completionSent = useRef(false);
-  const segments = useMemo(() => makeBarSegments(bend), [bend]);
-  const endPoint = useMemo(() => {
-    const end = makeBarSegments(bend).at(-1)!;
-    const tip = new THREE.Vector3(0, end.length * 0.5, 0).applyQuaternion(end.quaternion).add(end.position);
-    return tip;
-  }, [bend]);
+  const frontSegments = useMemo(() => makeBarSegments(bend, 0.17), [bend]);
+  const backSegments = useMemo(() => makeBarSegments(bend, -0.17), [bend]);
+  const centerHeight = bend * 1.22 + Math.max(0, bend - 0.52) * 1.2;
 
   useLayoutEffect(() => {
-    if (!bar.current) return;
     const matrix = new THREE.Matrix4();
-    segments.forEach((segment, index) => {
-      matrix.compose(segment.position, segment.quaternion, new THREE.Vector3(1, segment.length, 1));
-      bar.current!.setMatrixAt(index, matrix);
-    });
-    bar.current.instanceMatrix.needsUpdate = true;
-  }, [segments]);
+    const applySegments = (mesh: THREE.InstancedMesh | null, segments: BarSegment[]) => {
+      if (!mesh) return;
+      segments.forEach((segment, index) => {
+        matrix.compose(segment.position, segment.quaternion, new THREE.Vector3(1, segment.length, 1));
+        mesh.setMatrixAt(index, matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+    };
+    applySegments(frontBar.current, frontSegments);
+    applySegments(backBar.current, backSegments);
+  }, [frontSegments, backSegments]);
 
   useEffect(() => {
     document.body.style.cursor = dragging ? "grabbing" : "default";
@@ -937,27 +956,41 @@ function MetalChallenge({ onProgress, onComplete, onFeedback }: Omit<ChallengeCa
   };
 
   return (
-    <group ref={rig} position={[0, -0.3, 0]} rotation={[0.02, -0.14, -0.05]}>
-      <group position={[-2.58, -0.02, 0]}>
-        <RoundedBox args={[0.42, 0.9, 0.78]} radius={0.08} smoothness={4} castShadow receiveShadow>
-          <meshStandardMaterial color="#242728" roughness={0.46} metalness={0.78} />
-        </RoundedBox>
-        <mesh position={[0.2, 0, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
-          <cylinderGeometry args={[0.23, 0.23, 0.35, 24]} />
-          <meshPhysicalMaterial color="#777d7e" metalness={0.96} roughness={0.24} />
-        </mesh>
-        <mesh position={[-0.28, -0.68, 0]} castShadow>
-          <boxGeometry args={[0.75, 0.42, 1.05]} />
-          <meshStandardMaterial color="#1a1d1e" roughness={0.58} metalness={0.62} />
-        </mesh>
-      </group>
+    <group>
+      <CourtyardSet />
+      <StrongmanCharacter
+        pressure={bend}
+        burst={bend >= 0.88}
+        reducedMotion={reducedMotion}
+        mode="bend"
+        position={[0, 0.06, -0.86]}
+        scale={0.88}
+      />
+      <group ref={rig} position={[0, -0.28, 0.24]} rotation={[0.015, -0.04, 0]}>
+      {[-2.28, 2.28].map((x) => (
+        <group key={x} position={[x, -0.17, 0]}>
+          <RoundedBox args={[0.62, 0.5, 0.9]} radius={0.07} smoothness={3} castShadow receiveShadow>
+            <meshStandardMaterial color="#77746a" roughness={0.94} />
+          </RoundedBox>
+          {[-0.17, 0.17].map((holeX) => (
+            <mesh key={holeX} position={[holeX, 0.08, 0.46]} rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry args={[0.09, 0.09, 0.035, 18]} />
+              <meshStandardMaterial color="#34332f" roughness={0.9} />
+            </mesh>
+          ))}
+        </group>
+      ))}
 
-      <instancedMesh ref={bar} args={[undefined, undefined, segments.length]} castShadow receiveShadow>
-        <cylinderGeometry args={[0.105, 0.105, 1, 20]} />
-        <meshPhysicalMaterial color="#aeb4b4" metalness={0.98} roughness={0.2} clearcoat={0.38} />
+      <instancedMesh ref={frontBar} args={[undefined, undefined, frontSegments.length]} castShadow receiveShadow>
+        <cylinderGeometry args={[0.078, 0.078, 1, 14]} />
+        <meshPhysicalMaterial color="#707575" metalness={0.9} roughness={0.34} clearcoat={0.2} />
+      </instancedMesh>
+      <instancedMesh ref={backBar} args={[undefined, undefined, backSegments.length]} castShadow receiveShadow>
+        <cylinderGeometry args={[0.078, 0.078, 1, 14]} />
+        <meshPhysicalMaterial color="#545a5a" metalness={0.88} roughness={0.38} clearcoat={0.18} />
       </instancedMesh>
 
-      <group position={endPoint}>
+      <group position={[0, centerHeight, 0.22]}>
         <mesh
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -965,16 +998,18 @@ function MetalChallenge({ onProgress, onComplete, onFeedback }: Omit<ChallengeCa
           onPointerCancel={onPointerUp}
           castShadow
         >
-          <sphereGeometry args={[0.235, 30, 30]} />
+          <sphereGeometry args={[0.32, 30, 30]} />
           <meshPhysicalMaterial
-            color={dragging ? "#dfff37" : "#202526"}
-            metalness={0.84}
-            roughness={0.25}
-            clearcoat={0.5}
+            color={dragging ? "#dfff37" : "#151817"}
+            metalness={0.35}
+            roughness={0.48}
+            transparent
+            opacity={0.001}
+            depthWrite={false}
           />
         </mesh>
         <mesh rotation={[Math.PI / 2, 0, 0]}>
-          <torusGeometry args={[0.34, 0.018, 12, 48]} />
+          <torusGeometry args={[0.31, 0.018, 12, 48]} />
           <meshBasicMaterial color="#dfff37" transparent opacity={dragging ? 0.95 : 0.5} />
         </mesh>
       </group>
@@ -983,13 +1018,14 @@ function MetalChallenge({ onProgress, onComplete, onFeedback }: Omit<ChallengeCa
         <Sparkles
           count={Math.round(8 + bend * 9)}
           scale={[1.35, 0.85, 0.6]}
-          position={[0.75, 0.5 + bend * 0.4, 0]}
+          position={[0, centerHeight, 0.2]}
           size={2.4}
           speed={0.9}
           color="#f0ff79"
           opacity={0.68}
         />
       )}
+      </group>
     </group>
   );
 }
@@ -1184,7 +1220,7 @@ function CarModel({ lift, onPointerDown, onPointerMove, onPointerUp, dragging }:
   );
 }
 
-function CarChallenge({ onProgress, onComplete, onFeedback }: Omit<ChallengeCanvasProps, "challenge" | "reducedMotion">) {
+function CarChallenge({ reducedMotion, onProgress, onComplete, onFeedback }: Omit<ChallengeCanvasProps, "challenge">) {
   const [lift, setLift] = useState(0);
   const [dragging, setDragging] = useState(false);
   const dragStart = useRef({ y: 0, lift: 0 });
@@ -1229,7 +1265,18 @@ function CarChallenge({ onProgress, onComplete, onFeedback }: Omit<ChallengeCanv
   };
 
   return (
-    <group position={[0, -0.1, 0]} rotation={[0.04, -0.18, 0]}>
+    <group>
+      <CourtyardSet />
+      <StrongmanCharacter
+        pressure={lift}
+        burst={lift >= 0.9}
+        reducedMotion={reducedMotion}
+        mode="lift"
+        position={[2.08, -0.02, -0.72]}
+        scale={0.78}
+        rotationY={-0.28}
+      />
+      <group position={[0, -0.1, 0]} rotation={[0.04, -0.18, 0]}>
       <CarModel
         lift={lift}
         dragging={dragging}
@@ -1237,6 +1284,7 @@ function CarChallenge({ onProgress, onComplete, onFeedback }: Omit<ChallengeCanv
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
       />
+      </group>
     </group>
   );
 }
@@ -1336,10 +1384,10 @@ export default function ChallengeCanvas({
           />
         )}
         {challenge === 2 && (
-          <MetalChallenge onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} />
+          <MetalChallenge reducedMotion={reducedMotion} onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} />
         )}
         {challenge === 3 && (
-          <CarChallenge onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} />
+          <CarChallenge reducedMotion={reducedMotion} onProgress={onProgress} onComplete={onComplete} onFeedback={onFeedback} />
         )}
       </ResponsiveStage>
     </Canvas>

@@ -14,6 +14,28 @@ type AudioWindow = Window & { webkitAudioContext?: BrowserAudioContext };
 
 let sharedAudioContext: AudioContext | null = null;
 let sharedNoise: AudioBuffer | null = null;
+let memeLineIndex = 0;
+let lastMemeLineAt = 0;
+
+function speakMemeLine(kind: "touch" | "burst") {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  const now = performance.now();
+  if (kind === "touch" && now - lastMemeLineAt < 140) return;
+  lastMemeLineAt = now;
+  const touchLines = ["Abi! Bax, abi!", "Abi, abi! Bax!", "Bax abi!", "Abi! Abi!"];
+  const text = kind === "burst" ? "Abi! Abi! Abi! Bax, abi!" : touchLines[memeLineIndex++ % touchLines.length];
+  const utterance = new SpeechSynthesisUtterance(text);
+  const voices = window.speechSynthesis.getVoices();
+  const voice = voices.find((candidate) => candidate.lang.toLowerCase().startsWith("az"))
+    ?? voices.find((candidate) => candidate.lang.toLowerCase().startsWith("tr"));
+  if (voice) utterance.voice = voice;
+  utterance.lang = voice?.lang ?? "tr-TR";
+  utterance.rate = kind === "burst" ? 1.18 : 1.25;
+  utterance.pitch = 0.82;
+  utterance.volume = 0.9;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utterance);
+}
 
 function audioContext() {
   if (typeof window === "undefined") return null;
@@ -156,10 +178,10 @@ const challengeContent = {
   },
   2: {
     index: "02",
-    category: "STEEL / RESISTANCE",
+    category: "REBAR / RAW FORCE",
     lead: "BEND",
     tail: "IT.",
-    instruction: "GRAB THE LIME JOINT · PULL UP",
+    instruction: "GRAB THE REBAR · PULL IT UP",
   },
   3: {
     index: "03",
@@ -212,7 +234,10 @@ export default function Home() {
 
   const feedback = useCallback(
     (kind: FeedbackKind, intensity: number) => {
-      if (soundEnabled) synthFeedback(kind, intensity);
+      if (soundEnabled) {
+        synthFeedback(kind, intensity);
+        if (kind === "fruit") speakMemeLine("touch");
+      }
       if (typeof navigator !== "undefined" && "vibrate" in navigator && intensity > 0.58) {
         navigator.vibrate(kind === "fruit" ? 12 : 8);
       }
@@ -229,9 +254,12 @@ export default function Home() {
     if (completionRef.current) return;
     completionRef.current = true;
     setCompleted(true);
-    if (soundEnabled) synthFeedback("complete", 1);
+    if (soundEnabled) {
+      synthFeedback("complete", 1);
+      if (challenge === 1) speakMemeLine("burst");
+    }
     if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate([24, 35, 42]);
-  }, [soundEnabled]);
+  }, [challenge, soundEnabled]);
 
   const advance = () => {
     if (transitioning) return;
@@ -279,7 +307,10 @@ export default function Home() {
           type="button"
           className="sound-toggle"
           aria-pressed={soundEnabled}
-          onClick={() => setSoundEnabled((current) => !current)}
+          onClick={() => setSoundEnabled((current) => {
+            if (current && typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
+            return !current;
+          })}
         >
           <span className={`sound-bars ${soundEnabled ? "is-active" : ""}`} aria-hidden="true">
             <i />
@@ -333,7 +364,7 @@ export default function Home() {
           </span>
           <div>
             <p>{content.instruction}</p>
-            <span>{challenge === 1 ? "BUILD PRESSURE · MAKE HIM CRUSH IT" : "FORCE IS PERMANENT AFTER YIELD"}</span>
+            <span>{challenge === 1 ? "TOUCH = ABI · FULL GRIP = ABI ABI ABI" : challenge === 2 ? "ELMIN GRIP · PERMANENT REBAR BEND" : "ELMIN LIFTS · SUSPENSION FOLLOWS"}</span>
           </div>
         </div>
 
