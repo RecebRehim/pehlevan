@@ -2049,7 +2049,7 @@ function CameraRig({
   useFrame((state, delta) => {
     const portrait = size.height > size.width;
     const fov = portrait ? (size.height / size.width > 1.7 ? 46 : 42) : 35;
-    if (Math.abs(camera.fov - fov) > 0.08) {
+    if (camera instanceof THREE.PerspectiveCamera && Math.abs(camera.fov - fov) > 0.08) {
       camera.fov = fov;
       camera.updateProjectionMatrix();
     }
