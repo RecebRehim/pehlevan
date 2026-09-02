@@ -1993,19 +1993,42 @@ function SpikeChallenge({
   );
 }
 
+function isPortraitFrame(width: number, height: number) {
+  return height > width * 1.08;
+}
+
 function CameraRig({ challenge, reducedMotion }: { challenge: ChallengeNumber; reducedMotion: boolean }) {
-  const { camera } = useThree();
+  const { camera, size } = useThree();
+  const portrait = isPortraitFrame(size.width, size.height);
   const target = useMemo(() => {
-    if (challenge === 1) return new THREE.Vector3(0, 0.32, 7.15);
-    if (challenge === 2) return new THREE.Vector3(0, 0.25, 7.05);
-    if (challenge === 4) return new THREE.Vector3(0.15, 0.48, 7.45);
-    return new THREE.Vector3(0, 0.55, 7.6);
-  }, [challenge]);
+    const pull = portrait ? 1.32 : 1;
+    if (challenge === 1) return new THREE.Vector3(0, portrait ? 0.7 : 0.32, 7.15 * pull);
+    if (challenge === 2) return new THREE.Vector3(0, portrait ? 0.62 : 0.25, 7.05 * pull);
+    if (challenge === 4) return new THREE.Vector3(0.08, portrait ? 0.82 : 0.48, 7.45 * pull);
+    return new THREE.Vector3(0, portrait ? 0.92 : 0.55, 7.85 * pull);
+  }, [challenge, portrait]);
 
   useFrame((state, delta) => {
+    const persp = camera as THREE.PerspectiveCamera;
+    const nextFov = portrait ? 52 : 35;
+    if (Math.abs(persp.fov - nextFov) > 0.05) {
+      persp.fov = nextFov;
+      persp.updateProjectionMatrix();
+    }
     cameraKick.current = THREE.MathUtils.damp(cameraKick.current, 0, 9, delta);
     camera.position.lerp(target, reducedMotion ? 1 : 1 - Math.exp(-delta * 3.6));
-    camera.lookAt(0, challenge === 3 ? -0.08 : challenge === 4 ? 0.08 : -0.12, 0);
+    const lookY = portrait
+      ? challenge === 3
+        ? 0.16
+        : challenge === 4
+          ? 0.28
+          : 0.08
+      : challenge === 3
+        ? -0.08
+        : challenge === 4
+          ? 0.08
+          : -0.12;
+    camera.lookAt(0, lookY, 0);
     if (!reducedMotion) {
       const pointerAmount = challenge === 1 ? 0.035 : 0.07;
       const kick = cameraKick.current;
@@ -2025,14 +2048,25 @@ function ResponsiveStage({
   challenge: ChallengeNumber;
   children: React.ReactNode;
 }) {
-  const { viewport } = useThree();
-  const portrait = viewport.aspect < 0.82;
-  const targetWidth = challenge === 3 ? 6.5 : challenge === 4 ? 6.1 : challenge === 2 ? 6.25 : 5.25;
-  const targetHeight = challenge === 4 ? 3.7 : challenge === 3 ? 3.45 : 3.25;
-  const scale = portrait
-    ? viewport.height / targetHeight
-    : Math.min(1, viewport.width / targetWidth);
-  return <group scale={scale} position={[0, portrait ? -0.18 : 0, 0]}>{children}</group>;
+  const { viewport, size } = useThree();
+  const portrait = isPortraitFrame(size.width, size.height);
+  const targetWidth = portrait
+    ? challenge === 3
+      ? 5.85
+      : challenge === 4
+        ? 4.9
+        : challenge === 2
+          ? 5.2
+          : 4.4
+    : challenge === 3
+      ? 6.5
+      : challenge === 4
+        ? 6.1
+        : challenge === 2
+          ? 6.25
+          : 5.25;
+  const scale = Math.min(1, viewport.width / targetWidth);
+  return <group scale={scale}>{children}</group>;
 }
 
 function Studio({ reducedMotion }: { reducedMotion: boolean }) {
@@ -2114,7 +2148,7 @@ export default function ChallengeCanvas({
     <Canvas
       className="challenge-canvas"
       dpr={[1, 1.35]}
-      camera={{ fov: 35, near: 0.1, far: 60, position: [0, 0.3, 6.8] }}
+      camera={{ fov: 35, near: 0.1, far: 90, position: [0, 0.3, 6.8] }}
       gl={{ antialias: false, alpha: false, powerPreference: "high-performance", stencil: false }}
       shadows
       performance={{ min: 0.6, debounce: 200 }}
